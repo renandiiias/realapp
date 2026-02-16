@@ -1,0 +1,42 @@
+{
+  "name": "real-mobile-mvp",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "node scripts/start_expo.js",
+    "android": "node scripts/start_expo.js --android",
+    "ios": "node scripts/start_expo.js --ios",
+    "web": "node scripts/start_expo.js --web",
+    "postinstall": "node scripts/postinstall.js",
+    "test": "tsx scripts/unit_tests.ts"
+  },
+  "dependencies": {
+    "@expo-google-fonts/dm-serif-display": "^0.4.1",
+    "@expo-google-fonts/montserrat": "^0.4.1",
+    "@expo/env": "^2.0.8",
+    "@expo/vector-icons": "^14.1.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~54.0.33",
+    "expo-font": "~14.0.11",
+    "expo-linear-gradient": "~15.0.8",
+    "expo-router": "~6.0.23",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-reanimated": "~4.1.1",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-svg": "^15.15.3",
+    "react-native-web": "0.21.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "@types/react": "~19.1.0",
+    "babel-preset-expo": "^54.0.10",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}

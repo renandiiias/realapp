@@ -1,0 +1,8 @@
+{
+  "name": "real-lp",
+  "private": true,
+  "devDependencies": {
+    "playwright-core": "^1.51.0"
+  }
+}
+

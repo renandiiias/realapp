@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.env
+*.pyc
+.DS_Store
+**/node_modules/
+.playwright-cli/
+output/
+tmp/
+reports/
+real-mobile-mvp/.expo/
+real-mobile-mvp/dist/
+real-mobile-mvp/web-build/

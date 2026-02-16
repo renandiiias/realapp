@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revenue Experiment Tracker"
+  short_description: "Track revenue experiments by ROI, owner, and deadline."
+  default_prompt: "Track revenue experiments, rank next actions, and summarize ROI/owners/deadlines."

@@ -1,0 +1,12 @@
+{
+  "name": "real-codex-worker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/worker.js",
+  "scripts": {
+    "start": "node src/worker.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  }
+}
