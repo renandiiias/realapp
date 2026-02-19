@@ -11,12 +11,28 @@ import { Body } from "../../src/ui/components/Typography";
 import { useEffect, useRef, useState } from "react";
 import { routeWithIntent, targetToPath } from "../../src/ai/intentRouter";
 
+const promptExamples = [
+  "Quero um site para clínica com leads no WhatsApp",
+  "Criar campanha para encher agenda esta semana",
+  "Montar landing page para lançar meu curso",
+  "Preciso de criativos e plano de anúncios no Meta",
+];
+const promptSuggestions = [
+  "Quero um site para clínica com WhatsApp",
+  "Preciso de anúncios para vender mais este mês",
+  "Criar landing page para lançamento de produto",
+];
+
 export default function Home() {
   const auth = useAuth();
   const params = useLocalSearchParams<{ prompt?: string }>();
   const [prompt, setPrompt] = useState("");
   const [routing, setRouting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [exampleIndex, setExampleIndex] = useState(0);
+  const [typedPrompt, setTypedPrompt] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [cursorVisible, setCursorVisible] = useState(true);
 
   const pulse = useRef(new Animated.Value(0)).current;
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -37,6 +53,40 @@ export default function Home() {
     return () => loop.stop();
   }, [pulse]);
 
+  useEffect(() => {
+    const id = setInterval(() => setCursorVisible((v) => !v), 430);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (prompt.trim().length > 0) return;
+
+    const sample = promptExamples[exampleIndex] ?? "";
+    if (!sample) return;
+    const speed = deleting ? 18 : 34;
+
+    const timer = setTimeout(() => {
+      if (!deleting) {
+        if (typedPrompt.length < sample.length) {
+          setTypedPrompt(sample.slice(0, typedPrompt.length + 1));
+          return;
+        }
+        setDeleting(true);
+        return;
+      }
+
+      if (typedPrompt.length > 0) {
+        setTypedPrompt(sample.slice(0, typedPrompt.length - 1));
+        return;
+      }
+
+      setDeleting(false);
+      setExampleIndex((idx) => (idx + 1) % promptExamples.length);
+    }, typedPrompt.length === sample.length && !deleting ? 1250 : speed);
+
+    return () => clearTimeout(timer);
+  }, [typedPrompt, deleting, exampleIndex, prompt]);
+
   const startFromPrompt = async () => {
     const clean = prompt.trim();
     if (!clean) return;
@@ -55,6 +105,10 @@ export default function Home() {
       router.push({ pathname: targetPath as never, params: { prompt: clean } as never });
       setRouting(false);
     });
+  };
+
+  const applySuggestion = (value: string) => {
+    setPrompt(value);
   };
 
   const pulseBorderColor = pulse.interpolate({
@@ -90,23 +144,36 @@ export default function Home() {
         ) : null}
 
         <View style={styles.formBlock}>
-          <Animated.View style={[styles.magicPulse, { borderColor: pulseBorderColor, shadowOpacity: pulseShadowOpacity }]}>
+          <Animated.View style={[styles.magicPulse, { borderColor: pulseBorderColor, shadowOpacity: pulseShadowOpacity }]}> 
             <TextInput
               value={prompt}
               onChangeText={setPrompt}
-              placeholder="Descreve em uma frase o que você precisa"
-              placeholderTextColor="rgba(166,173,185,0.84)"
+              placeholder=""
               style={styles.magicInput}
               multiline
             />
+            {prompt.trim().length === 0 ? (
+              <Text style={styles.typingHint}>
+                {typedPrompt}
+                <Text style={[styles.cursor, !cursorVisible && styles.cursorHidden]}>|</Text>
+              </Text>
+            ) : null}
           </Animated.View>
+
+          <View style={styles.suggestions}>
+            {promptSuggestions.map((item) => (
+              <Text key={item} style={styles.suggestionChip} onPress={() => applySuggestion(item)}>
+                {item}
+              </Text>
+            ))}
+          </View>
 
           <Button label={routing ? "Direcionando..." : "Começar agora"} onPress={() => void startFromPrompt()} disabled={!prompt.trim() || routing} />
         </View>
       </View>
 
       {toast ? (
-        <Animated.View pointerEvents="none" style={[styles.toast, { opacity: toastOpacity }]}>
+        <Animated.View pointerEvents="none" style={[styles.toast, { opacity: toastOpacity }]}> 
           <Text style={styles.toastText}>{toast}</Text>
         </Animated.View>
       ) : null}
@@ -151,6 +218,37 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 26,
     backgroundColor: "rgba(11,12,14,0.7)",
+  },
+  typingHint: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    top: 12,
+    color: "rgba(166,173,185,0.9)",
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 18,
+    lineHeight: 26,
+  },
+  cursor: {
+    color: realTheme.colors.green,
+  },
+  cursorHidden: {
+    opacity: 0,
+  },
+  suggestions: {
+    gap: 8,
+  },
+  suggestionChip: {
+    borderWidth: 1,
+    borderColor: realTheme.colors.line,
+    borderRadius: realTheme.radius.sm,
+    backgroundColor: "rgba(16,18,22,0.72)",
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingVertical: 9,
+    paddingHorizontal: 11,
   },
   toast: {
     position: "absolute",

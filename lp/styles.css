@@ -206,6 +206,66 @@ img {
   background: rgba(18, 19, 22, 0.76);
 }
 
+.btn-home-glow {
+  --home-btn-speed: 1.9s;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.btn-home-glow::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -30%;
+  width: 84%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translateY(-50%);
+  background: conic-gradient(
+    from 205deg,
+    transparent 0deg,
+    rgba(255, 255, 255, 0.7) 70deg,
+    transparent 135deg
+  );
+  filter: blur(1px);
+  opacity: 0.62;
+  animation: home-btn-slide var(--home-btn-speed) ease-in-out infinite alternate;
+}
+
+.btn-home-glow::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0.2),
+    rgba(255, 255, 255, 0) 30%,
+    rgba(255, 255, 255, 0.08) 60%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  mix-blend-mode: soft-light;
+  opacity: 0.5;
+}
+
+@keyframes home-btn-slide {
+  to {
+    left: 48%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-home-glow::before {
+    animation: none;
+    left: 20%;
+    opacity: 0.38;
+  }
+}
+
 .hero {
   position: relative;
   padding: 104px 0 76px;
