@@ -1,25 +1,37 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { StyleSheet, View, type ViewStyle } from "react-native";
 import { realTheme } from "../../theme/realTheme";
+import { memo, ReactNode } from "react";
+import { SPACING } from "../../utils/constants";
 
-export function Card({
+export interface CardProps {
+  children: ReactNode;
+  style?: ViewStyle;
+  variant?: 'default' | 'subtle';
+  padding?: keyof typeof SPACING;
+}
+
+export const Card = memo(function Card({
   children,
   style,
-}: {
-  children: React.ReactNode;
-  style?: ViewStyle;
-}) {
+  variant = 'default',
+  padding = 'md',
+}: CardProps) {
+  const gradientColors = variant === 'default'
+    ? ["rgba(53,226,20,0.26)", "rgba(237,237,238,0.08)", "rgba(142,0,166,0.18)"]
+    : ["rgba(53,226,20,0.12)", "rgba(237,237,238,0.04)", "rgba(142,0,166,0.09)"];
+
   return (
     <LinearGradient
-      colors={["rgba(53,226,20,0.26)", "rgba(237,237,238,0.08)", "rgba(142,0,166,0.18)"]}
+      colors={gradientColors}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
       style={[styles.shell, style]}
     >
-      <View style={styles.card}>{children}</View>
+      <View style={[styles.card, { padding: SPACING[padding] }]}>{children}</View>
     </LinearGradient>
   );
-}
+});
 
 const styles = StyleSheet.create({
   shell: {
@@ -34,7 +46,6 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "rgba(13, 15, 16, 0.94)",
     borderRadius: realTheme.radius.lg,
-    padding: 14,
-    gap: 10,
+    gap: SPACING.sm,
   },
 });

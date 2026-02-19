@@ -1,9 +1,9 @@
 import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Pressable, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
-import { fetchAdsDashboardSnapshot, type AdsDashboardSnapshot, type AdsRunningCreative } from "../../src/ads/dashboardApi";
+import { fetchAdsDashboardSnapshot, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
 import { useQueue } from "../../src/queue/QueueProvider";
-import type { JsonObject, Order, OrderStatus } from "../../src/queue/types";
+import type { Order } from "../../src/queue/types";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -11,152 +11,34 @@ import { Chip } from "../../src/ui/components/Chip";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
 import { StatusPill } from "../../src/ui/components/StatusPill";
+import { formatBRL, formatDateTime, formatRelativeTime } from "../../src/utils/formatters";
+import { ORDER_FILTERS, type OrderFilter, filterOrdersByStatus, getOrdersByType, orderTypeLabel } from "../../src/services/orderService";
+import { calculateAdsDashboardMetrics, generateFallbackRunningCreatives, buildKPIData } from "../../src/services/adsDashboardService";
 
-type Filter =
-  | { id: "all"; label: string }
-  | { id: "draft"; label: string; statuses: OrderStatus[] }
-  | { id: "active"; label: string; statuses: OrderStatus[] }
-  | { id: "done"; label: string; statuses: OrderStatus[] }
-  | { id: "waiting_payment"; label: string; statuses: OrderStatus[] };
-
-const filters: Filter[] = [
-  { id: "all", label: "Todos" },
-  {
-    id: "active",
-    label: "Ativos",
-    statuses: ["queued", "in_progress", "needs_approval", "needs_info", "blocked"],
-  },
-  { id: "draft", label: "Rascunhos", statuses: ["draft"] },
-  { id: "waiting_payment", label: "Ativação", statuses: ["waiting_payment"] },
-  { id: "done", label: "Concluídos", statuses: ["done", "failed"] },
-];
-
-const liveStatuses: OrderStatus[] = ["in_progress", "needs_approval", "needs_info"];
 const TAB_SAFE_SCROLL_BOTTOM = 120;
 
 function formatWhen(isoTs: string): string {
   try {
-    const d = new Date(isoTs);
-    return d.toLocaleString();
+    return formatRelativeTime(new Date(isoTs));
   } catch {
     return isoTs;
   }
 }
 
-function formatBRL(value: number): string {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
-}
-
-function orderTypeLabel(order: Order): string {
-  if (order.type === "ads") return "Tráfego";
-  if (order.type === "site") return "Site";
-  return "Conteúdo";
-}
-
-function hashString(input: string): number {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
-function extractNumbers(text: string): number[] {
-  const matches = text.match(/\d+(?:[.,]\d+)?/g) ?? [];
-  return matches
-    .map((m) => Number(m.replace(".", "").replace(",", ".")))
-    .filter((n) => Number.isFinite(n) && n > 0);
-}
-
-function inferMonthlyBudget(payload: JsonObject): number {
-  const budgetRaw = typeof payload.budget === "string" ? payload.budget.toLowerCase().trim() : "";
-  const numbers = extractNumbers(budgetRaw);
-
-  if (budgetRaw) {
-    const avg = numbers.length > 1 ? numbers.reduce((acc, n) => acc + n, 0) / numbers.length : numbers[0] ?? 0;
-    if (avg > 0) {
-      if (budgetRaw.includes("/dia") || budgetRaw.includes(" dia") || budgetRaw.includes("diario") || budgetRaw.includes("diário")) {
-        return avg * 30;
-      }
-      return avg;
-    }
-  }
-
-  const monthlyBudget = typeof payload.monthlyBudget === "string" ? payload.monthlyBudget : "";
-  if (monthlyBudget === "ate_200") return 200;
-  if (monthlyBudget === "500_1000") return 750;
-  if (monthlyBudget === "1000_5000") return 3000;
-
-  return 1200;
-}
-
-function inferCpl(order: Order): number {
-  const seed = hashString(order.id) % 22;
-  const base = 26 + seed;
-
-  if (order.status === "done") return Math.max(18, base - 5);
-  if (order.status === "in_progress") return base;
-  if (order.status === "needs_approval" || order.status === "needs_info") return base + 3;
-  return base + 6;
-}
-
-function formatDateTime(iso?: string | null): string {
-  if (!iso) return "sem atualização";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function fallbackRunningCreatives(orders: Order[]): AdsRunningCreative[] {
-  const liveOrders = orders.filter((order) => liveStatuses.includes(order.status));
-  return liveOrders.map((order, idx) => {
-    const preferredCreative = typeof order.payload.preferredCreative === "string" ? order.payload.preferredCreative : "";
-    const creativeName = preferredCreative.trim() || `Criativo ${idx + 1}`;
-    return {
-      id: `local-${order.id}`,
-      name: creativeName,
-      campaignName: order.title,
-      status: "active",
-      updatedAt: order.updatedAt,
-    };
-  });
-}
-
 export default function Orders() {
   const queue = useQueue();
-  const [filter, setFilter] = useState<Filter>(filters[0]!);
+  const [filter, setFilter] = useState<OrderFilter>(ORDER_FILTERS[0]!);
   const [showLists, setShowLists] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] = useState<AdsDashboardSnapshot | null>(null);
 
   const list = useMemo(() => {
-    if (filter.id === "all") return queue.orders;
-    return queue.orders.filter((o) => filter.statuses.includes(o.status));
+    return filterOrdersByStatus(queue.orders, filter.statuses);
   }, [filter, queue.orders]);
 
-  const adsOrders = useMemo(() => queue.orders.filter((o) => o.type === "ads"), [queue.orders]);
+  const adsOrders = useMemo(() => getOrdersByType(queue.orders, 'ads'), [queue.orders]);
 
   const adsDashboard = useMemo(() => {
-    const live = adsOrders.filter((order) => liveStatuses.includes(order.status));
-    const monthlySpend = live.reduce((acc, order) => acc + inferMonthlyBudget(order.payload), 0);
-    const leads = live.reduce((acc, order) => {
-      const cpl = inferCpl(order);
-      return acc + inferMonthlyBudget(order.payload) / cpl;
-    }, 0);
-    const cplAvg = live.length
-      ? live.reduce((acc, order) => acc + inferCpl(order), 0) / live.length
-      : 0;
-
-    return {
-      totalAds: adsOrders.length,
-      liveAds: live.length,
-      monthlySpend,
-      estimatedLeads: leads,
-      cplAvg,
-      pendingApprovals: queue.listPendingApprovals().length,
-    };
+    return calculateAdsDashboardMetrics(adsOrders, queue.listPendingApprovals().length);
   }, [adsOrders, queue]);
 
   useEffect(() => {
@@ -183,33 +65,13 @@ export default function Orders() {
   }, []);
 
   const runningCreatives = useMemo(
-    () => (remoteSnapshot?.creativesRunning?.length ? remoteSnapshot.creativesRunning : fallbackRunningCreatives(adsOrders)),
+    () => (remoteSnapshot?.creativesRunning?.length ? remoteSnapshot.creativesRunning : generateFallbackRunningCreatives(adsOrders)),
     [adsOrders, remoteSnapshot],
   );
 
   const kpi = useMemo(() => {
-    if (remoteSnapshot) {
-      return {
-        liveAds: remoteSnapshot.activeCampaigns,
-        monthlySpend: remoteSnapshot.monthlySpend,
-        monthlyLeads: remoteSnapshot.monthlyLeads,
-        cpl: remoteSnapshot.cpl,
-        activeCreatives: remoteSnapshot.activeCreatives,
-        updatedAt: remoteSnapshot.updatedAt,
-        source: "server" as const,
-      };
-    }
-
-    return {
-      liveAds: adsDashboard.liveAds,
-      monthlySpend: adsDashboard.monthlySpend,
-      monthlyLeads: Math.round(adsDashboard.estimatedLeads),
-      cpl: adsDashboard.cplAvg || null,
-      activeCreatives: runningCreatives.length,
-      updatedAt: null,
-      source: "fallback" as const,
-    };
-  }, [adsDashboard, remoteSnapshot, runningCreatives.length]);
+    return buildKPIData(adsDashboard, runningCreatives, remoteSnapshot || undefined);
+  }, [adsDashboard, remoteSnapshot, runningCreatives]);
 
   if (!queue.planActive && queue.orders.length === 0) {
     return (
@@ -303,7 +165,7 @@ export default function Orders() {
           {showLists ? (
             <>
               <View style={styles.filters}>
-                {filters.map((f) => (
+                {ORDER_FILTERS.map((f) => (
                   <Chip key={f.id} label={f.label} active={f.id === filter.id} onPress={() => setFilter(f)} />
                 ))}
               </View>
