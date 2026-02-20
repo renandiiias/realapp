@@ -74,8 +74,8 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="approvals"
           options={{
-            title: "Aprovar",
-            tabBarIcon: ({ color, size }) => <Ionicons name="checkmark-done-outline" color={color} size={size} />,
+            title: "Entregas",
+            tabBarIcon: ({ color, size }) => <Ionicons name="chatbubble-ellipses-outline" color={color} size={size} />,
           }}
         />
         <Tabs.Screen

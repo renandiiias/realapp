@@ -17,11 +17,6 @@ const promptExamples = [
   "Quero uma landing page pronta para vender",
   "Preciso de criativos e plano de anúncios no Meta",
 ];
-const promptSuggestions = [
-  "Preciso vender mais no WhatsApp",
-  "Quero anúncios para vender mais este mês",
-  "Quero uma landing page pronta para vender",
-];
 const quickServices: Array<{ id: "site" | "ads" | "video"; label: string; prompt: string }> = [
   { id: "site", label: "Criar site", prompt: "Quero criar um site" },
   { id: "ads", label: "Fazer anúncio", prompt: "Quero fazer um anúncio" },
@@ -123,10 +118,6 @@ export default function Home() {
     });
   };
 
-  const applySuggestion = (value: string) => {
-    setPrompt(value);
-  };
-
   const pulseBorderColor = pulse.interpolate({
     inputRange: [0, 1],
     outputRange: ["rgba(53,226,20,0.26)", "rgba(53,226,20,0.65)"],
@@ -160,14 +151,6 @@ export default function Home() {
         ) : null}
 
         <View style={styles.formBlock}>
-          <View style={styles.quickServicesRow}>
-            {quickServices.map((item) => (
-              <Text key={item.id} style={styles.quickServiceCard} onPress={() => setPrompt(item.prompt)}>
-                {item.label}
-              </Text>
-            ))}
-          </View>
-
           <Animated.View style={[styles.magicPulse, { borderColor: pulseBorderColor, shadowOpacity: pulseShadowOpacity }]}> 
             <TextInput
               value={prompt}
@@ -184,10 +167,10 @@ export default function Home() {
             ) : null}
           </Animated.View>
 
-          <View style={styles.suggestions}>
-            {promptSuggestions.map((item) => (
-              <Text key={item} style={styles.suggestionChip} onPress={() => applySuggestion(item)}>
-                {item}
+          <View style={styles.quickServicesRow}>
+            {quickServices.map((item) => (
+              <Text key={item.id} style={styles.quickServiceCard} onPress={() => setPrompt(item.prompt)}>
+                {item.label}
               </Text>
             ))}
           </View>
@@ -303,21 +286,6 @@ const styles = StyleSheet.create({
   },
   cursorHidden: {
     opacity: 0,
-  },
-  suggestions: {
-    gap: 8,
-  },
-  suggestionChip: {
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    borderRadius: realTheme.radius.sm,
-    backgroundColor: "rgba(16,18,22,0.72)",
-    color: realTheme.colors.muted,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    paddingVertical: 9,
-    paddingHorizontal: 11,
   },
   toast: {
     position: "absolute",
