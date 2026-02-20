@@ -1,14 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ImageBackground,
+  PanResponder,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
@@ -16,89 +17,227 @@ import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, Title } from "../../src/ui/components/Typography";
+import { Body, Title } from "../../src/ui/components/Typography";
 
 type BuilderStage = 0 | 1 | 2 | 3 | 4;
-
-type SectionDef = {
-  id: string;
-  label: string;
-  hint: string;
-};
 
 type TemplateDef = {
   id: string;
   name: string;
   hint: string;
   hero: string;
-  chip: string;
-  chipText: string;
+};
+
+type PaletteDef = {
+  id: string;
+  name: string;
+  appBg: string;
+  previewBg: string;
+  sectionBg: string;
+  sectionText: string;
+  mutedText: string;
+  accent: string;
+  accentText: string;
+};
+
+type BuilderBlock = {
+  id: string;
+  label: string;
+  title: string;
+  body: string;
+  buttonText?: string;
+  enabled: boolean;
+  origin: "default" | "custom";
 };
 
 type BuilderPayload = {
   businessName: string;
   segment: string;
   city: string;
+  audience: string;
+  offerSummary: string;
+  mainDifferential: string;
   templateId: string;
+  paletteId: string;
   headline: string;
   subheadline: string;
   ctaLabel: string;
   whatsappNumber: string;
   heroImageUrl: string;
-  enabledSections: string[];
+  blocks: BuilderBlock[];
 };
 
-const stages: Array<{ id: BuilderStage; label: string; title: string; subtitle: string }> = [
-  { id: 0, label: "Negocio", title: "Dados do negocio", subtitle: "Base para montar sua pagina." },
-  { id: 1, label: "Visual", title: "Direcao visual", subtitle: "Escolha o estilo principal." },
-  { id: 2, label: "Conteudo", title: "Texto principal", subtitle: "Edite mensagem, CTA e contato." },
-  { id: 3, label: "Blocos", title: "Estrutura da pagina", subtitle: "Ative os blocos que quer publicar." },
-  { id: 4, label: "Publicar", title: "Preview final", subtitle: "Revise e publique sua pagina." },
+type CopySuggestion = {
+  headline: string;
+  subheadline: string;
+  ctaLabel: string;
+  offerLine: string;
+  proofLine: string;
+};
+
+const DRAG_ROW_HEIGHT = 72;
+
+const stages: Array<{ id: BuilderStage; title: string; subtitle: string }> = [
+  { id: 0, title: "Contexto", subtitle: "Dados do negocio para montar a pagina." },
+  { id: 1, title: "Visual", subtitle: "Escolha template e paleta." },
+  { id: 2, title: "Copy", subtitle: "Texto pre-preenchido para ajuste rapido." },
+  { id: 3, title: "Estrutura", subtitle: "Clique e arraste para reordenar blocos." },
+  { id: 4, title: "Preview", subtitle: "Toque no bloco para editar seu conteudo." },
 ];
 
 const templates: TemplateDef[] = [
   {
     id: "artisan",
     name: "Artesanal Premium",
-    hint: "Look quente, foco em produto e WhatsApp.",
+    hint: "Quente e premium, focado em produto.",
     hero: "https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=1200&q=80",
-    chip: "#E7E0D3",
-    chipText: "#1C1A18",
   },
   {
     id: "clean",
     name: "Clean Conversao",
-    hint: "Visual limpo, legibilidade alta, CTA forte.",
+    hint: "Layout limpo e objetivo para leads.",
     hero: "https://images.unsplash.com/photo-1556740749-887f6717d7e4?auto=format&fit=crop&w=1200&q=80",
-    chip: "#E5EDF6",
-    chipText: "#101821",
   },
   {
     id: "bold",
-    name: "Bold Contraste",
-    hint: "Mais impacto visual e oferta em destaque.",
+    name: "Bold Impact",
+    hint: "Contraste e chamadas fortes.",
     hero: "https://images.unsplash.com/photo-1496449903678-68ddcb189a24?auto=format&fit=crop&w=1200&q=80",
-    chip: "#F5D6CD",
-    chipText: "#26150F",
   },
 ];
 
-const allSections: SectionDef[] = [
-  { id: "hero", label: "Hero", hint: "Abertura com promessa + CTA" },
-  { id: "benefits", label: "Beneficios", hint: "Motivos para escolher sua oferta" },
-  { id: "proof", label: "Prova", hint: "Depoimentos, numeros, resultados" },
-  { id: "offer", label: "Oferta", hint: "Condicao comercial e chamada" },
-  { id: "faq", label: "FAQ", hint: "Duvidas comuns antes da compra" },
+const palettes: PaletteDef[] = [
+  {
+    id: "forest",
+    name: "Forest",
+    appBg: "#0B1110",
+    previewBg: "#121A18",
+    sectionBg: "#E7E0D3",
+    sectionText: "#1C1A18",
+    mutedText: "#5B544A",
+    accent: "#2E5D3E",
+    accentText: "#ECF8F0",
+  },
+  {
+    id: "midnight",
+    name: "Midnight",
+    appBg: "#0A111C",
+    previewBg: "#131E2E",
+    sectionBg: "#1E2D43",
+    sectionText: "#EAF1FC",
+    mutedText: "#A9BCD9",
+    accent: "#8ED1FC",
+    accentText: "#0A1E34",
+  },
+  {
+    id: "sunset",
+    name: "Sunset",
+    appBg: "#1A100D",
+    previewBg: "#2A1A15",
+    sectionBg: "#FFEAE1",
+    sectionText: "#2B1812",
+    mutedText: "#8C5E4E",
+    accent: "#D0613A",
+    accentText: "#FFF4EE",
+  },
 ];
-
-const defaultSections = allSections.map((item) => item.id);
 
 function sanitizeWhats(raw: string): string {
   return raw.replace(/[^\d]/g, "");
 }
 
-function includesSection(list: string[], id: string): boolean {
-  return list.includes(id);
+function moveItemById(list: BuilderBlock[], id: string, targetIndex: number): BuilderBlock[] {
+  const currentIndex = list.findIndex((item) => item.id === id);
+  if (currentIndex < 0) return list;
+  const safeTarget = Math.max(0, Math.min(targetIndex, list.length - 1));
+  if (safeTarget === currentIndex) return list;
+
+  const next = [...list];
+  const [picked] = next.splice(currentIndex, 1);
+  if (!picked) return list;
+  next.splice(safeTarget, 0, picked);
+  return next;
+}
+
+function buildSuggestion(input: {
+  businessName: string;
+  segment: string;
+  city: string;
+  audience: string;
+  offerSummary: string;
+  mainDifferential: string;
+  goal?: string;
+}): CopySuggestion {
+  const business = input.businessName || "Sua empresa";
+  const segment = input.segment || "seu negocio";
+  const city = input.city ? ` em ${input.city}` : "";
+  const audience = input.audience || "publico ideal";
+  const offer = input.offerSummary || "uma oferta clara";
+  const diff = input.mainDifferential || "agilidade no atendimento";
+  const goal = input.goal === "visibilidade" ? "mais visibilidade" : "mais pedidos";
+
+  return {
+    headline: `${business}: ${goal}${city}`,
+    subheadline: `Pagina de ${segment}, pensada para ${audience}, com foco em conversao no WhatsApp.`,
+    ctaLabel: "Falar no WhatsApp",
+    offerLine: `${offer}. Diferencial: ${diff}.`,
+    proofLine: `Clientes destacam ${diff} e resultado rapido no primeiro contato.`,
+  };
+}
+
+function buildDefaultBlocks(suggestion: CopySuggestion): BuilderBlock[] {
+  return [
+    {
+      id: "hero",
+      label: "Hero",
+      title: suggestion.headline,
+      body: suggestion.subheadline,
+      buttonText: suggestion.ctaLabel,
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "benefits",
+      label: "Beneficios",
+      title: "Por que escolher",
+      body: "Atendimento rapido; Processo simples; Resultado previsivel",
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "proof",
+      label: "Prova",
+      title: "Resultados e confianca",
+      body: suggestion.proofLine,
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "offer",
+      label: "Oferta",
+      title: "Oferta principal",
+      body: suggestion.offerLine,
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "faq",
+      label: "FAQ",
+      title: "Perguntas frequentes",
+      body: "Qual prazo?; Como funciona pagamento?; Como comeco?",
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "cta",
+      label: "CTA final",
+      title: "Vamos conversar agora",
+      body: "Clique no botao e fale com nosso time no WhatsApp.",
+      buttonText: suggestion.ctaLabel,
+      enabled: true,
+      origin: "default",
+    },
+  ];
 }
 
 export default function SiteWebsiteBuilder() {
@@ -110,110 +249,287 @@ export default function SiteWebsiteBuilder() {
   const editing = orderId ? queue.getOrder(orderId) : null;
 
   const [stage, setStage] = useState<BuilderStage>(0);
+  const [scrollEnabled, setScrollEnabled] = useState(true);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
   const [businessName, setBusinessName] = useState("");
   const [segment, setSegment] = useState("");
   const [city, setCity] = useState("");
+  const [audience, setAudience] = useState("");
+  const [offerSummary, setOfferSummary] = useState("");
+  const [mainDifferential, setMainDifferential] = useState("");
 
   const [templateId, setTemplateId] = useState<string>(templates[0]!.id);
+  const [paletteId, setPaletteId] = useState<string>(palettes[0]!.id);
 
-  const [headline, setHeadline] = useState("Sua pagina pronta para vender mais no WhatsApp");
-  const [subheadline, setSubheadline] = useState("Atraia clientes certos com mensagem clara e botao de acao imediato.");
-  const [ctaLabel, setCtaLabel] = useState("Pedir no WhatsApp");
+  const [headline, setHeadline] = useState("");
+  const [subheadline, setSubheadline] = useState("");
+  const [ctaLabel, setCtaLabel] = useState("");
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [heroImageUrl, setHeroImageUrl] = useState("");
 
-  const [enabledSections, setEnabledSections] = useState<string[]>(defaultSections);
+  const [blocks, setBlocks] = useState<BuilderBlock[]>([]);
+  const [customBlockName, setCustomBlockName] = useState("");
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
 
   const [savingDraft, setSavingDraft] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [copyTouched, setCopyTouched] = useState({ headline: false, subheadline: false, cta: false });
+  const dragMetaRef = useRef<{ id: string; startIndex: number; currentIndex: number } | null>(null);
+
+  const suggestion = useMemo(
+    () =>
+      buildSuggestion({
+        businessName: businessName.trim(),
+        segment: segment.trim(),
+        city: city.trim(),
+        audience: audience.trim(),
+        offerSummary: offerSummary.trim(),
+        mainDifferential: mainDifferential.trim(),
+        goal: auth.rayX?.mainGoal,
+      }),
+    [businessName, segment, city, audience, offerSummary, mainDifferential, auth.rayX?.mainGoal],
+  );
+
+  useEffect(() => {
+    if (!auth.ready) return;
+    if (businessName || segment || city || audience || offerSummary || mainDifferential || whatsappNumber) return;
+
+    setBusinessName(auth.companyProfile?.companyName ?? "");
+    setSegment(auth.rayX?.marketSegment ?? "");
+    setCity(auth.companyProfile?.city ?? "");
+    setAudience(auth.companyProfile?.targetAudience ?? "");
+    setOfferSummary(auth.companyProfile?.offerSummary ?? prompt);
+    setMainDifferential(auth.companyProfile?.mainDifferential ?? "");
+    setWhatsappNumber(auth.companyProfile?.whatsappBusiness ?? "");
+  }, [
+    auth.ready,
+    auth.companyProfile,
+    auth.rayX,
+    prompt,
+    businessName,
+    segment,
+    city,
+    audience,
+    offerSummary,
+    mainDifferential,
+    whatsappNumber,
+  ]);
+
+  useEffect(() => {
+    if (!copyTouched.headline) setHeadline(suggestion.headline);
+    if (!copyTouched.subheadline) setSubheadline(suggestion.subheadline);
+    if (!copyTouched.cta) setCtaLabel(suggestion.ctaLabel);
+  }, [suggestion, copyTouched]);
+
+  useEffect(() => {
+    if (blocks.length > 0) return;
+    setBlocks(buildDefaultBlocks(suggestion));
+  }, [blocks.length, suggestion]);
+
   useEffect(() => {
     if (!editing) return;
     const payload = editing.payload as Record<string, unknown>;
+    const builderRaw = payload.builder;
+    if (!builderRaw || typeof builderRaw !== "object" || Array.isArray(builderRaw)) return;
 
-    const builder = payload.builder;
-    if (builder && typeof builder === "object" && !Array.isArray(builder)) {
-      const data = builder as Partial<BuilderPayload>;
-      if (typeof data.businessName === "string") setBusinessName(data.businessName);
-      if (typeof data.segment === "string") setSegment(data.segment);
-      if (typeof data.city === "string") setCity(data.city);
-      if (typeof data.templateId === "string" && templates.some((item) => item.id === data.templateId)) setTemplateId(data.templateId);
-      if (typeof data.headline === "string") setHeadline(data.headline);
-      if (typeof data.subheadline === "string") setSubheadline(data.subheadline);
-      if (typeof data.ctaLabel === "string") setCtaLabel(data.ctaLabel);
-      if (typeof data.whatsappNumber === "string") setWhatsappNumber(data.whatsappNumber);
-      if (typeof data.heroImageUrl === "string") setHeroImageUrl(data.heroImageUrl);
-      if (Array.isArray(data.enabledSections)) {
-        const valid = data.enabledSections.filter((item): item is string => typeof item === "string");
-        if (valid.length > 0) setEnabledSections(valid);
-      }
-      return;
-    }
+    const builder = builderRaw as Partial<BuilderPayload>;
+    if (typeof builder.businessName === "string") setBusinessName(builder.businessName);
+    if (typeof builder.segment === "string") setSegment(builder.segment);
+    if (typeof builder.city === "string") setCity(builder.city);
+    if (typeof builder.audience === "string") setAudience(builder.audience);
+    if (typeof builder.offerSummary === "string") setOfferSummary(builder.offerSummary);
+    if (typeof builder.mainDifferential === "string") setMainDifferential(builder.mainDifferential);
+    if (typeof builder.templateId === "string" && templates.some((item) => item.id === builder.templateId)) setTemplateId(builder.templateId);
+    if (typeof builder.paletteId === "string" && palettes.some((item) => item.id === builder.paletteId)) setPaletteId(builder.paletteId);
+    if (typeof builder.headline === "string") setHeadline(builder.headline);
+    if (typeof builder.subheadline === "string") setSubheadline(builder.subheadline);
+    if (typeof builder.ctaLabel === "string") setCtaLabel(builder.ctaLabel);
+    if (typeof builder.whatsappNumber === "string") setWhatsappNumber(builder.whatsappNumber);
+    if (typeof builder.heroImageUrl === "string") setHeroImageUrl(builder.heroImageUrl);
 
-    if (typeof payload.headline === "string") setHeadline(payload.headline);
-    if (typeof payload.cta === "string") setCtaLabel(payload.cta);
-    if (Array.isArray(payload.sections)) {
-      const mapped = payload.sections
-        .map((item) => String(item).toLowerCase())
-        .map((value) => allSections.find((section) => section.label.toLowerCase() === value)?.id)
-        .filter((item): item is string => Boolean(item));
-      if (mapped.length > 0) setEnabledSections(mapped);
+    if (Array.isArray(builder.blocks)) {
+      const parsed = builder.blocks
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const raw = item as Partial<BuilderBlock>;
+          if (typeof raw.id !== "string" || typeof raw.label !== "string") return null;
+          return {
+            id: raw.id,
+            label: raw.label,
+            title: typeof raw.title === "string" ? raw.title : raw.label,
+            body: typeof raw.body === "string" ? raw.body : "",
+            buttonText: typeof raw.buttonText === "string" ? raw.buttonText : undefined,
+            enabled: Boolean(raw.enabled),
+            origin: raw.origin === "custom" ? "custom" : "default",
+          } as BuilderBlock;
+        })
+        .filter((item): item is BuilderBlock => Boolean(item));
+      if (parsed.length > 0) setBlocks(parsed);
     }
   }, [editing]);
 
-  useEffect(() => {
-    if (!prompt) return;
-    setSubheadline((current) => (current === "Atraia clientes certos com mensagem clara e botao de acao imediato." ? prompt : current));
-  }, [prompt]);
-
   const selectedTemplate = useMemo(() => templates.find((item) => item.id === templateId) ?? templates[0]!, [templateId]);
+  const selectedPalette = useMemo(() => palettes.find((item) => item.id === paletteId) ?? palettes[0]!, [paletteId]);
+  const progress = useMemo(() => ((stage + 1) / stages.length) * 100, [stage]);
 
-  const progress = useMemo(() => {
-    return Math.round(((stage + 1) / stages.length) * 100);
-  }, [stage]);
+  const enabledBlocks = useMemo(() => blocks.filter((item) => item.enabled), [blocks]);
+  const selectedBlock = useMemo(() => blocks.find((item) => item.id === selectedBlockId) ?? null, [blocks, selectedBlockId]);
+
+  useEffect(() => {
+    if (!selectedBlockId && enabledBlocks[0]) {
+      setSelectedBlockId(enabledBlocks[0].id);
+      return;
+    }
+    if (selectedBlockId && !blocks.some((item) => item.id === selectedBlockId && item.enabled)) {
+      setSelectedBlockId(enabledBlocks[0]?.id ?? null);
+    }
+  }, [selectedBlockId, enabledBlocks, blocks]);
 
   const canAdvance = useMemo(() => {
     if (stage === 0) return businessName.trim().length > 1 && segment.trim().length > 1;
-    if (stage === 1) return Boolean(templateId);
+    if (stage === 1) return Boolean(templateId) && Boolean(paletteId);
     if (stage === 2) return headline.trim().length > 4 && ctaLabel.trim().length > 2;
-    if (stage === 3) return enabledSections.length > 0;
+    if (stage === 3) return enabledBlocks.length > 0;
     return true;
-  }, [stage, businessName, segment, templateId, headline, ctaLabel, enabledSections]);
+  }, [stage, businessName, segment, templateId, paletteId, headline, ctaLabel, enabledBlocks.length]);
+
+  const updateBlock = (id: string, patch: Partial<BuilderBlock>) => {
+    setBlocks((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  };
+
+  const syncCoreBlocksFromCopy = () => {
+    setBlocks((prev) =>
+      prev.map((item) => {
+        if (item.id === "hero") {
+          return { ...item, title: headline.trim() || item.title, body: subheadline.trim() || item.body, buttonText: ctaLabel.trim() || item.buttonText };
+        }
+        if (item.id === "cta") {
+          return { ...item, buttonText: ctaLabel.trim() || item.buttonText };
+        }
+        if (item.id === "offer") {
+          return { ...item, body: suggestion.offerLine };
+        }
+        if (item.id === "proof") {
+          return { ...item, body: suggestion.proofLine };
+        }
+        return item;
+      }),
+    );
+  };
+
+  const regenerateCopy = () => {
+    setHeadline(suggestion.headline);
+    setSubheadline(suggestion.subheadline);
+    setCtaLabel(suggestion.ctaLabel);
+    setCopyTouched({ headline: false, subheadline: false, cta: false });
+    syncCoreBlocksFromCopy();
+  };
+
+  const toggleBlock = (id: string) => {
+    setBlocks((prev) => {
+      const enabledCount = prev.filter((item) => item.enabled).length;
+      return prev.map((item) => {
+        if (item.id !== id) return item;
+        if (item.enabled && enabledCount <= 1) return item;
+        return { ...item, enabled: !item.enabled };
+      });
+    });
+  };
+
+  const addCustomBlock = () => {
+    const label = customBlockName.trim();
+    if (!label) return;
+    const id = `custom_${Date.now()}`;
+    setBlocks((prev) => [
+      ...prev,
+      {
+        id,
+        label,
+        title: label,
+        body: "Descreva este bloco aqui.",
+        enabled: true,
+        origin: "custom",
+      },
+    ]);
+    setCustomBlockName("");
+    setSelectedBlockId(id);
+  };
+
+  const removeCustomBlock = (id: string) => {
+    setBlocks((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (!target || target.origin !== "custom") return prev;
+      const next = prev.filter((item) => item.id !== id);
+      if (next.some((item) => item.enabled)) return next;
+      return next.map((item, idx) => (idx === 0 ? { ...item, enabled: true } : item));
+    });
+  };
+
+  const createDragResponder = (blockId: string) =>
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 6 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+      onPanResponderGrant: () => {
+        const startIndex = blocks.findIndex((item) => item.id === blockId);
+        if (startIndex < 0) return;
+        dragMetaRef.current = { id: blockId, startIndex, currentIndex: startIndex };
+        setDraggingId(blockId);
+        setScrollEnabled(false);
+      },
+      onPanResponderMove: (_, gesture) => {
+        const dragMeta = dragMetaRef.current;
+        if (!dragMeta) return;
+        const step = Math.trunc(gesture.dy / DRAG_ROW_HEIGHT);
+        const target = Math.max(0, Math.min(dragMeta.startIndex + step, blocks.length - 1));
+        if (target === dragMeta.currentIndex) return;
+
+        setBlocks((prev) => moveItemById(prev, dragMeta.id, target));
+        dragMeta.currentIndex = target;
+      },
+      onPanResponderRelease: () => {
+        dragMetaRef.current = null;
+        setDraggingId(null);
+        setScrollEnabled(true);
+      },
+      onPanResponderTerminate: () => {
+        dragMetaRef.current = null;
+        setDraggingId(null);
+        setScrollEnabled(true);
+      },
+    });
 
   const buildPayload = (): BuilderPayload => ({
     businessName: businessName.trim(),
     segment: segment.trim(),
     city: city.trim(),
+    audience: audience.trim(),
+    offerSummary: offerSummary.trim(),
+    mainDifferential: mainDifferential.trim(),
     templateId,
+    paletteId,
     headline: headline.trim(),
     subheadline: subheadline.trim(),
     ctaLabel: ctaLabel.trim(),
     whatsappNumber: sanitizeWhats(whatsappNumber),
     heroImageUrl: heroImageUrl.trim(),
-    enabledSections,
+    blocks,
   });
-
-  const orderTitle = useMemo(() => {
-    const name = businessName.trim() || segment.trim() || "Website Builder";
-    return `Site: ${name}`;
-  }, [businessName, segment]);
-
-  const orderSummary = useMemo(() => {
-    const location = city.trim() ? ` em ${city.trim()}` : "";
-    return `${segment.trim() || "Negocio"}${location} · Template ${selectedTemplate.name}`;
-  }, [segment, city, selectedTemplate.name]);
 
   const buildOrderData = () => {
     const payload = buildPayload();
+    const enabledLabels = payload.blocks.filter((item) => item.enabled).map((item) => item.label);
+
     return {
-      title: orderTitle,
-      summary: orderSummary,
+      title: `Site: ${payload.businessName || payload.segment || "Novo"}`,
+      summary: `${payload.segment || "Negocio"}${payload.city ? ` em ${payload.city}` : ""} · ${selectedTemplate.name}`,
       payload: {
         builder: payload,
         headline: payload.headline,
         cta: payload.ctaLabel,
-        sections: payload.enabledSections,
+        sections: enabledLabels,
         objective: `${payload.segment || "Negocio"}${payload.city ? ` em ${payload.city}` : ""}`,
       },
     };
@@ -266,39 +582,17 @@ export default function SiteWebsiteBuilder() {
     }
   };
 
-  const goNext = () => {
-    if (!canAdvance || stage >= 4) return;
-    setStage((stage + 1) as BuilderStage);
-  };
-
-  const goBack = () => {
-    if (stage <= 0) return;
-    setStage((stage - 1) as BuilderStage);
-  };
-
-  const toggleSection = (sectionId: string) => {
-    setEnabledSections((prev) => {
-      if (prev.includes(sectionId)) {
-        if (prev.length === 1) return prev;
-        return prev.filter((item) => item !== sectionId);
-      }
-      return [...prev, sectionId];
-    });
-  };
-
-  const previewHero = heroImageUrl.trim() || selectedTemplate.hero;
-  const stageMeta = stages[stage];
+  const heroSource = heroImageUrl.trim() || selectedTemplate.hero;
 
   const renderStage = () => {
     if (stage === 0) {
       return (
         <View style={styles.card}>
-          <Kicker>Etapa 1</Kicker>
-          <Title>{stageMeta.title}</Title>
-          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+          <Title>{stages[0].title}</Title>
+          <Body style={styles.helper}>{stages[0].subtitle}</Body>
 
           <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Nome do negocio</Text>
+            <Text style={styles.label}>Nome da empresa</Text>
             <TextInput
               value={businessName}
               onChangeText={setBusinessName}
@@ -319,15 +613,25 @@ export default function SiteWebsiteBuilder() {
             />
           </View>
 
+          <View style={styles.row}>
+            <View style={[styles.fieldWrap, styles.half]}>
+              <Text style={styles.label}>Cidade</Text>
+              <TextInput value={city} onChangeText={setCity} style={styles.input} placeholder="Cidade" placeholderTextColor="rgba(237,237,238,0.45)" />
+            </View>
+            <View style={[styles.fieldWrap, styles.half]}>
+              <Text style={styles.label}>Publico</Text>
+              <TextInput value={audience} onChangeText={setAudience} style={styles.input} placeholder="Publico-alvo" placeholderTextColor="rgba(237,237,238,0.45)" />
+            </View>
+          </View>
+
           <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Cidade (opcional)</Text>
-            <TextInput
-              value={city}
-              onChangeText={setCity}
-              style={styles.input}
-              placeholder="Ex.: Rio de Janeiro"
-              placeholderTextColor="rgba(237,237,238,0.45)"
-            />
+            <Text style={styles.label}>Oferta</Text>
+            <TextInput value={offerSummary} onChangeText={setOfferSummary} style={styles.input} placeholder="Resumo da oferta" placeholderTextColor="rgba(237,237,238,0.45)" />
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Diferencial</Text>
+            <TextInput value={mainDifferential} onChangeText={setMainDifferential} style={styles.input} placeholder="Principal diferencial" placeholderTextColor="rgba(237,237,238,0.45)" />
           </View>
         </View>
       );
@@ -336,36 +640,51 @@ export default function SiteWebsiteBuilder() {
     if (stage === 1) {
       return (
         <View style={styles.card}>
-          <Kicker>Etapa 2</Kicker>
-          <Title>{stageMeta.title}</Title>
-          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+          <Title>{stages[1].title}</Title>
+          <Body style={styles.helper}>{stages[1].subtitle}</Body>
 
+          <Text style={styles.groupLabel}>Template</Text>
           <View style={styles.templatesList}>
             {templates.map((template) => {
               const active = template.id === templateId;
               return (
-                <TouchableOpacity
-                  key={template.id}
-                  onPress={() => setTemplateId(template.id)}
-                  activeOpacity={0.9}
-                  style={[styles.templateCard, active ? styles.templateCardActive : null]}
-                >
+                <Pressable key={template.id} onPress={() => setTemplateId(template.id)} style={[styles.templateCard, active ? styles.activeBorder : null]}>
                   <ImageBackground source={{ uri: template.hero }} style={styles.templateHero} imageStyle={styles.templateHeroImage}>
                     <LinearGradient
-                      colors={["rgba(9,11,14,0.1)", "rgba(9,11,14,0.76)"]}
+                      colors={["rgba(10,12,14,0.1)", "rgba(10,12,14,0.74)"]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 0, y: 1 }}
                       style={styles.templateOverlay}
                     >
-                      <View style={[styles.templateChip, { backgroundColor: template.chip }]}> 
-                        <Text style={[styles.templateChipText, { color: template.chipText }]}>{template.name}</Text>
-                      </View>
+                      <Text style={styles.templateName}>{template.name}</Text>
                     </LinearGradient>
                   </ImageBackground>
                   <Text style={styles.templateHint}>{template.hint}</Text>
-                </TouchableOpacity>
+                </Pressable>
               );
             })}
+          </View>
+
+          <Text style={styles.groupLabel}>Paleta</Text>
+          <View style={styles.paletteRow}>
+            {palettes.map((palette) => {
+              const active = palette.id === paletteId;
+              return (
+                <Pressable key={palette.id} onPress={() => setPaletteId(palette.id)} style={[styles.paletteCard, active ? styles.activeBorder : null]}>
+                  <View style={styles.paletteSwatchRow}>
+                    <View style={[styles.swatch, { backgroundColor: palette.sectionBg }]} />
+                    <View style={[styles.swatch, { backgroundColor: palette.sectionText }]} />
+                    <View style={[styles.swatch, { backgroundColor: palette.accent }]} />
+                  </View>
+                  <Text style={styles.paletteName}>{palette.name}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Imagem principal (URL opcional)</Text>
+            <TextInput value={heroImageUrl} onChangeText={setHeroImageUrl} style={styles.input} placeholder="https://..." placeholderTextColor="rgba(237,237,238,0.45)" autoCapitalize="none" />
           </View>
         </View>
       );
@@ -374,15 +693,23 @@ export default function SiteWebsiteBuilder() {
     if (stage === 2) {
       return (
         <View style={styles.card}>
-          <Kicker>Etapa 3</Kicker>
-          <Title>{stageMeta.title}</Title>
-          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+          <Title>{stages[2].title}</Title>
+          <Body style={styles.helper}>{stages[2].subtitle}</Body>
+
+          <Pressable onPress={regenerateCopy} style={styles.aiButton}>
+            <Ionicons name="sparkles" size={14} color="#091306" />
+            <Text style={styles.aiButtonText}>Gerar copy novamente</Text>
+          </Pressable>
 
           <View style={styles.fieldWrap}>
             <Text style={styles.label}>Headline</Text>
             <TextInput
               value={headline}
-              onChangeText={setHeadline}
+              onChangeText={(value) => {
+                setCopyTouched((prev) => ({ ...prev, headline: true }));
+                setHeadline(value);
+                updateBlock("hero", { title: value });
+              }}
               style={styles.input}
               placeholder="Mensagem principal"
               placeholderTextColor="rgba(237,237,238,0.45)"
@@ -393,48 +720,47 @@ export default function SiteWebsiteBuilder() {
             <Text style={styles.label}>Subheadline</Text>
             <TextInput
               value={subheadline}
-              onChangeText={setSubheadline}
+              onChangeText={(value) => {
+                setCopyTouched((prev) => ({ ...prev, subheadline: true }));
+                setSubheadline(value);
+                updateBlock("hero", { body: value });
+              }}
               style={[styles.input, styles.inputMulti]}
               multiline
               textAlignVertical="top"
-              placeholder="Complemento da oferta"
+              placeholder="Texto de apoio"
               placeholderTextColor="rgba(237,237,238,0.45)"
             />
           </View>
 
-          <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Texto do botao CTA</Text>
-            <TextInput
-              value={ctaLabel}
-              onChangeText={setCtaLabel}
-              style={styles.input}
-              placeholder="Ex.: Pedir no WhatsApp"
-              placeholderTextColor="rgba(237,237,238,0.45)"
-            />
-          </View>
+          <View style={styles.row}>
+            <View style={[styles.fieldWrap, styles.half]}>
+              <Text style={styles.label}>CTA</Text>
+              <TextInput
+                value={ctaLabel}
+                onChangeText={(value) => {
+                  setCopyTouched((prev) => ({ ...prev, cta: true }));
+                  setCtaLabel(value);
+                  updateBlock("hero", { buttonText: value });
+                  updateBlock("cta", { buttonText: value });
+                }}
+                style={styles.input}
+                placeholder="Texto do botao"
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
+            </View>
 
-          <View style={styles.fieldWrap}>
-            <Text style={styles.label}>WhatsApp (somente numeros)</Text>
-            <TextInput
-              value={whatsappNumber}
-              onChangeText={setWhatsappNumber}
-              style={styles.input}
-              keyboardType="phone-pad"
-              placeholder="Ex.: 5521999998888"
-              placeholderTextColor="rgba(237,237,238,0.45)"
-            />
-          </View>
-
-          <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Imagem principal (URL opcional)</Text>
-            <TextInput
-              value={heroImageUrl}
-              onChangeText={setHeroImageUrl}
-              style={styles.input}
-              placeholder="https://..."
-              placeholderTextColor="rgba(237,237,238,0.45)"
-              autoCapitalize="none"
-            />
+            <View style={[styles.fieldWrap, styles.half]}>
+              <Text style={styles.label}>WhatsApp</Text>
+              <TextInput
+                value={whatsappNumber}
+                onChangeText={setWhatsappNumber}
+                style={styles.input}
+                keyboardType="phone-pad"
+                placeholder="55119999..."
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
+            </View>
           </View>
         </View>
       );
@@ -443,84 +769,200 @@ export default function SiteWebsiteBuilder() {
     if (stage === 3) {
       return (
         <View style={styles.card}>
-          <Kicker>Etapa 4</Kicker>
-          <Title>{stageMeta.title}</Title>
-          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+          <Title>{stages[3].title}</Title>
+          <Body style={styles.helper}>{stages[3].subtitle}</Body>
 
-          <View style={styles.sectionsList}>
-            {allSections.map((section) => {
-              const active = includesSection(enabledSections, section.id);
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Adicionar bloco customizado</Text>
+            <View style={styles.row}>
+              <TextInput
+                value={customBlockName}
+                onChangeText={setCustomBlockName}
+                style={[styles.input, styles.flexInput]}
+                placeholder="Ex.: Como funciona"
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
+              <Button label="Adicionar" onPress={addCustomBlock} variant="secondary" />
+            </View>
+          </View>
+
+          <View style={styles.blocksList}>
+            {blocks.map((block) => {
+              const dragging = draggingId === block.id;
+              const dragResponder = createDragResponder(block.id);
+
               return (
-                <TouchableOpacity
-                  key={section.id}
-                  onPress={() => toggleSection(section.id)}
-                  activeOpacity={0.9}
-                  style={[styles.sectionRow, active ? styles.sectionRowActive : null]}
-                >
-                  <View style={styles.sectionTextWrap}>
-                    <Text style={styles.sectionLabel}>{section.label}</Text>
-                    <Text style={styles.sectionHint}>{section.hint}</Text>
+                <View key={block.id} style={[styles.blockRow, !block.enabled ? styles.blockRowDisabled : null, dragging ? styles.draggingRow : null]}>
+                  <Pressable onPress={() => toggleBlock(block.id)} style={[styles.blockToggle, block.enabled ? styles.blockToggleOn : null]}>
+                    {block.enabled ? <Ionicons name="checkmark" size={14} color="#081306" /> : null}
+                  </Pressable>
+
+                  <View style={styles.blockTextWrap}>
+                    <Text style={styles.blockLabel}>{block.label}</Text>
+                    <Text style={styles.blockMeta}>{block.origin === "custom" ? "custom" : "padrao"}</Text>
                   </View>
-                  <View style={[styles.sectionCheck, active ? styles.sectionCheckActive : null]}>
-                    {active ? <Ionicons name="checkmark" size={15} color="#061005" /> : null}
+
+                  <View {...dragResponder.panHandlers} style={styles.dragHandle}>
+                    <Ionicons name="reorder-three" size={18} color={realTheme.colors.text} />
                   </View>
-                </TouchableOpacity>
+
+                  {block.origin === "custom" ? (
+                    <Pressable onPress={() => removeCustomBlock(block.id)} style={styles.deleteBtn}>
+                      <Ionicons name="trash-outline" size={14} color="#FF8D8D" />
+                    </Pressable>
+                  ) : null}
+                </View>
               );
             })}
           </View>
-
-          <Body style={styles.info}>Minimo de 1 bloco ativo para publicar.</Body>
         </View>
       );
     }
 
     return (
       <View style={styles.previewWrap}>
-        <View style={styles.builderHeader}>
-          <Text style={styles.brand}>Real*</Text>
-          <Text style={styles.builderTitle}>Criando sua pagina</Text>
-          <Text style={styles.builderStep}>Passo {stage + 1} de 5</Text>
-          <View style={styles.builderProgressTrack}>
-            <View style={[styles.builderProgressFill, { width: `${progress}%` }]} />
+        <Title>{stages[4].title}</Title>
+        <Body style={styles.helper}>{stages[4].subtitle}</Body>
+
+        <View style={[styles.phoneShell, { backgroundColor: selectedPalette.previewBg }]}> 
+          <View style={styles.phoneInner}>
+            {enabledBlocks.map((block) => {
+              if (block.id === "hero") {
+                return (
+                  <Pressable key={block.id} onPress={() => setSelectedBlockId(block.id)} style={[styles.siteSection, selectedBlockId === block.id ? styles.selectedSection : null]}>
+                    <ImageBackground source={{ uri: heroSource }} style={styles.previewHero} imageStyle={styles.previewHeroImage}>
+                      <LinearGradient colors={["rgba(11,12,14,0.72)", "rgba(11,12,14,0.2)", "rgba(11,12,14,0.84)"]} start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }} style={styles.previewHeroOverlay}>
+                        <Text style={styles.previewBrand}>{businessName || "Sua Marca"}</Text>
+                        <Text style={styles.previewCaption}>{segment || "Seu segmento"}</Text>
+                        <Text style={styles.previewHeroTitle}>{block.title}</Text>
+                        <Text style={styles.previewHeroBody}>{block.body}</Text>
+                        <View style={[styles.previewHeroButton, { backgroundColor: selectedPalette.accent }]}> 
+                          <Text style={[styles.previewHeroButtonText, { color: selectedPalette.accentText }]}>{block.buttonText || ctaLabel || "Falar no WhatsApp"}</Text>
+                        </View>
+                      </LinearGradient>
+                    </ImageBackground>
+                  </Pressable>
+                );
+              }
+
+              if (block.id === "benefits") {
+                const items = block.body.split(";").map((value) => value.trim()).filter(Boolean).slice(0, 3);
+                return (
+                  <Pressable key={block.id} onPress={() => setSelectedBlockId(block.id)} style={[styles.siteSection, styles.cardSection, selectedBlockId === block.id ? styles.selectedSection : null, { backgroundColor: selectedPalette.sectionBg }]}>
+                    <Text style={[styles.sectionTitleLarge, { color: selectedPalette.sectionText }]}>{block.title}</Text>
+                    <View style={styles.metricRow}>
+                      {items.map((item, index) => (
+                        <View key={`${block.id}_${index}`} style={styles.metricCard}>
+                          <Text style={styles.metricIcon}>+</Text>
+                          <Text style={[styles.metricText, { color: selectedPalette.mutedText }]}>{item}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </Pressable>
+                );
+              }
+
+              if (block.id === "proof") {
+                return (
+                  <Pressable key={block.id} onPress={() => setSelectedBlockId(block.id)} style={[styles.siteSection, styles.cardSection, selectedBlockId === block.id ? styles.selectedSection : null, { backgroundColor: selectedPalette.sectionBg }]}>
+                    <Text style={[styles.sectionTitleLarge, { color: selectedPalette.sectionText }]}>{block.title}</Text>
+                    <Text style={[styles.sectionBody, { color: selectedPalette.mutedText }]}>{block.body}</Text>
+                    <View style={styles.proofPills}>
+                      <View style={styles.proofPill}><Text style={styles.proofPillText}>+120 clientes</Text></View>
+                      <View style={styles.proofPill}><Text style={styles.proofPillText}>4.9 avaliacao</Text></View>
+                    </View>
+                  </Pressable>
+                );
+              }
+
+              if (block.id === "faq") {
+                const lines = block.body.split(";").map((value) => value.trim()).filter(Boolean);
+                return (
+                  <Pressable key={block.id} onPress={() => setSelectedBlockId(block.id)} style={[styles.siteSection, styles.cardSection, selectedBlockId === block.id ? styles.selectedSection : null, { backgroundColor: selectedPalette.sectionBg }]}>
+                    <Text style={[styles.sectionTitleLarge, { color: selectedPalette.sectionText }]}>{block.title}</Text>
+                    {lines.map((line, index) => (
+                      <View key={`${block.id}_${index}`} style={styles.faqRow}>
+                        <Text style={[styles.faqQuestion, { color: selectedPalette.sectionText }]}>{line}</Text>
+                        <Ionicons name="chevron-forward" size={14} color={selectedPalette.mutedText} />
+                      </View>
+                    ))}
+                  </Pressable>
+                );
+              }
+
+              return (
+                <Pressable key={block.id} onPress={() => setSelectedBlockId(block.id)} style={[styles.siteSection, styles.cardSection, selectedBlockId === block.id ? styles.selectedSection : null, { backgroundColor: selectedPalette.sectionBg }]}>
+                  <Text style={[styles.sectionTitleLarge, { color: selectedPalette.sectionText }]}>{block.title}</Text>
+                  <Text style={[styles.sectionBody, { color: selectedPalette.mutedText }]}>{block.body}</Text>
+                  {block.buttonText ? (
+                    <View style={[styles.inlineButton, { backgroundColor: selectedPalette.accent }]}>
+                      <Text style={[styles.inlineButtonText, { color: selectedPalette.accentText }]}>{block.buttonText}</Text>
+                    </View>
+                  ) : null}
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
-        <View style={styles.phoneShell}>
-          <View style={styles.phoneInner}>
-            <ImageBackground source={{ uri: previewHero }} style={styles.previewHero} imageStyle={styles.previewHeroImage}>
-              <LinearGradient
-                colors={["rgba(11,12,14,0.76)", "rgba(11,12,14,0.2)", "rgba(11,12,14,0.84)"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 0, y: 1 }}
-                style={styles.previewHeroOverlay}
-              >
-                <Text style={styles.previewBrand}>{businessName.trim() || "Sua Marca"}</Text>
-                <Text style={styles.previewCaption}>{segment.trim() || "Seu negocio"}</Text>
-              </LinearGradient>
-            </ImageBackground>
+        {selectedBlock ? (
+          <View style={styles.editorCard}>
+            <Text style={styles.editorTitle}>Editar bloco: {selectedBlock.label}</Text>
 
-            <View style={[styles.previewCopyCard, { backgroundColor: selectedTemplate.chip }]}> 
-              <Text style={[styles.previewHeadline, { color: selectedTemplate.chipText }]}>{headline.trim() || "Sua headline"}</Text>
-              <Text style={[styles.previewSub, { color: `${selectedTemplate.chipText}DD` }]}>{subheadline.trim() || "Seu texto de apoio"}</Text>
+            <View style={styles.fieldWrap}>
+              <Text style={styles.label}>Titulo</Text>
+              <TextInput
+                value={selectedBlock.title}
+                onChangeText={(value) => {
+                  updateBlock(selectedBlock.id, { title: value });
+                  if (selectedBlock.id === "hero") {
+                    setCopyTouched((prev) => ({ ...prev, headline: true }));
+                    setHeadline(value);
+                  }
+                }}
+                style={styles.input}
+                placeholder="Titulo do bloco"
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
+            </View>
 
-              <View style={styles.sectionPillsWrap}>
-                {enabledSections.map((sectionId) => {
-                  const section = allSections.find((item) => item.id === sectionId);
-                  if (!section) return null;
-                  return (
-                    <View key={sectionId} style={styles.sectionPill}>
-                      <Text style={styles.sectionPillText}>{section.label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
+            <View style={styles.fieldWrap}>
+              <Text style={styles.label}>Texto</Text>
+              <TextInput
+                value={selectedBlock.body}
+                onChangeText={(value) => {
+                  updateBlock(selectedBlock.id, { body: value });
+                  if (selectedBlock.id === "hero") {
+                    setCopyTouched((prev) => ({ ...prev, subheadline: true }));
+                    setSubheadline(value);
+                  }
+                }}
+                style={[styles.input, styles.inputMulti]}
+                multiline
+                textAlignVertical="top"
+                placeholder="Descricao do bloco"
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
+            </View>
 
-              <View style={styles.previewWhatsButton}>
-                <Text style={styles.previewWhatsText}>{ctaLabel.trim() || "Falar no WhatsApp"}</Text>
-              </View>
+            <View style={styles.fieldWrap}>
+              <Text style={styles.label}>Texto do botao (opcional)</Text>
+              <TextInput
+                value={selectedBlock.buttonText ?? ""}
+                onChangeText={(value) => {
+                  updateBlock(selectedBlock.id, { buttonText: value || undefined });
+                  if (selectedBlock.id === "hero" || selectedBlock.id === "cta") {
+                    setCopyTouched((prev) => ({ ...prev, cta: true }));
+                    setCtaLabel(value);
+                  }
+                }}
+                style={styles.input}
+                placeholder="Ex.: Quero conversar"
+                placeholderTextColor="rgba(237,237,238,0.45)"
+              />
             </View>
           </View>
-        </View>
+        ) : null}
 
         {!auth.profileProductionComplete ? (
           <Body style={styles.pending}>Para publicar, complete seu cadastro no Raio-X.</Body>
@@ -531,40 +973,51 @@ export default function SiteWebsiteBuilder() {
 
   return (
     <Screen style={styles.screenDense}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <View style={styles.progressCard}>
-          <View style={styles.progressTopRow}>
-            <Text style={styles.progressTitle}>Website Builder</Text>
-            <Text style={styles.progressPct}>{progress}%</Text>
-          </View>
-          <Text style={styles.progressMeta}>Etapa {stage + 1} de {stages.length} · {stageMeta.label}</Text>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progress}%` }]} />
-          </View>
+      <View style={[styles.page, { backgroundColor: selectedPalette.appBg }]}> 
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${progress}%` }]} />
         </View>
 
-        {renderStage()}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          scrollEnabled={scrollEnabled}
+        >
+          {renderStage()}
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        </ScrollView>
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      </ScrollView>
-
-      <View style={styles.footerActions}>
-        {stage < 4 ? (
-          <View style={styles.row}>
-            <Button label="Voltar" variant="secondary" onPress={goBack} disabled={stage === 0} style={styles.action} />
-            <Button label="Proximo" onPress={goNext} disabled={!canAdvance} style={styles.action} />
-          </View>
-        ) : (
-          <>
+        <View style={styles.footerActions}>
+          {stage < 4 ? (
             <View style={styles.row}>
-              <Button label="Editar bloco" variant="secondary" onPress={() => setStage(3)} style={styles.action} />
-              <Button label="Publicar" onPress={publish} loading={publishing} style={styles.action} />
+              <Button
+                label="Voltar"
+                variant="secondary"
+                onPress={() => setStage((value) => (value > 0 ? ((value - 1) as BuilderStage) : value))}
+                disabled={stage === 0}
+                style={styles.action}
+              />
+              <Button
+                label="Proximo"
+                onPress={() => setStage((value) => (value < 4 ? ((value + 1) as BuilderStage) : value))}
+                disabled={!canAdvance}
+                style={styles.action}
+              />
             </View>
-            <TouchableOpacity onPress={saveDraft} disabled={savingDraft || publishing} style={styles.saveDraftTouch}>
-              <Text style={styles.saveDraftText}>{savingDraft ? "Salvando..." : "Salvar rascunho"}</Text>
-            </TouchableOpacity>
-          </>
-        )}
+          ) : (
+            <>
+              <View style={styles.row}>
+                <Button label="Editar estrutura" variant="secondary" onPress={() => setStage(3)} style={styles.action} />
+                <Button label="Publicar" onPress={publish} loading={publishing} style={styles.action} />
+              </View>
+              <Pressable onPress={saveDraft} disabled={savingDraft || publishing} style={styles.saveDraftTouch}>
+                <Text style={styles.saveDraftText}>{savingDraft ? "Salvando..." : "Salvar rascunho"}</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
       </View>
     </Screen>
   );
@@ -572,59 +1025,37 @@ export default function SiteWebsiteBuilder() {
 
 const styles = StyleSheet.create({
   screenDense: {
-    paddingHorizontal: 10,
-    paddingTop: 6,
-    paddingBottom: 10,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
-  content: {
-    paddingBottom: 122,
-    gap: 10,
-  },
-  progressCard: {
-    borderRadius: realTheme.radius.md,
-    borderWidth: 1,
-    borderColor: "rgba(198,255,175,0.2)",
-    backgroundColor: "rgba(9,12,15,0.66)",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 6,
-  },
-  progressTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  progressTitle: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 16,
-  },
-  progressPct: {
-    color: "#9FDD8E",
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 13,
-  },
-  progressMeta: {
-    color: realTheme.colors.muted,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 12,
+  page: {
+    flex: 1,
   },
   progressTrack: {
-    height: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(194,212,194,0.2)",
+    height: 6,
+    width: "100%",
+    backgroundColor: "rgba(194,212,194,0.22)",
     overflow: "hidden",
   },
   progressFill: {
-    height: 7,
-    borderRadius: 999,
+    height: "100%",
     backgroundColor: "#A3D695",
+  },
+  scroll: {
+    flex: 1,
+  },
+  content: {
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 10,
   },
   card: {
     borderRadius: realTheme.radius.md,
     borderWidth: 1,
-    borderColor: "rgba(237,237,238,0.1)",
-    backgroundColor: "rgba(10,12,15,0.45)",
+    borderColor: "rgba(237,237,238,0.12)",
+    backgroundColor: "rgba(9,12,15,0.56)",
     padding: 12,
     gap: 10,
   },
@@ -632,8 +1063,13 @@ const styles = StyleSheet.create({
     color: realTheme.colors.muted,
     fontSize: 13,
   },
+  groupLabel: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 14,
+  },
   fieldWrap: {
-    gap: 5,
+    gap: 6,
   },
   label: {
     color: realTheme.colors.text,
@@ -652,7 +1088,18 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
   },
   inputMulti: {
-    minHeight: 90,
+    minHeight: 88,
+  },
+  row: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  half: {
+    flex: 1,
+  },
+  flexInput: {
+    flex: 1,
   },
   templatesList: {
     gap: 10,
@@ -662,9 +1109,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(237,237,238,0.12)",
     overflow: "hidden",
-    backgroundColor: "rgba(17,20,24,0.85)",
+    backgroundColor: "rgba(16,20,26,0.85)",
   },
-  templateCardActive: {
+  activeBorder: {
     borderColor: "rgba(163,214,149,0.9)",
     shadowColor: "#9FDD8E",
     shadowOpacity: 0.16,
@@ -673,7 +1120,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   templateHero: {
-    height: 116,
+    height: 108,
     justifyContent: "flex-end",
   },
   templateHeroImage: {
@@ -682,57 +1129,82 @@ const styles = StyleSheet.create({
   templateOverlay: {
     padding: 10,
   },
-  templateChip: {
-    alignSelf: "flex-start",
-    borderRadius: realTheme.radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  templateChipText: {
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 12,
+  templateName: {
+    color: "#FFFFFF",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 14,
   },
   templateHint: {
     color: realTheme.colors.text,
     fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 13,
     paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingVertical: 9,
   },
-  sectionsList: {
+  paletteRow: {
+    flexDirection: "row",
     gap: 8,
   },
-  sectionRow: {
+  paletteCard: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(237,237,238,0.12)",
+    backgroundColor: "rgba(16,20,26,0.85)",
+    padding: 8,
+    gap: 6,
+  },
+  paletteSwatchRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  swatch: {
+    flex: 1,
+    height: 18,
+    borderRadius: 6,
+  },
+  paletteName: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 12,
+  },
+  aiButton: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: realTheme.radius.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#A3D695",
+  },
+  aiButtonText: {
+    color: "#091306",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 12,
+  },
+  blocksList: {
+    gap: 8,
+  },
+  blockRow: {
+    minHeight: DRAG_ROW_HEIGHT,
     borderRadius: realTheme.radius.sm,
     borderWidth: 1,
     borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(15,18,24,0.76)",
+    backgroundColor: "rgba(15,18,24,0.78)",
     paddingHorizontal: 10,
-    paddingVertical: 10,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
   },
-  sectionRowActive: {
-    borderColor: "rgba(163,214,149,0.8)",
-    backgroundColor: "rgba(53,226,20,0.12)",
+  blockRowDisabled: {
+    opacity: 0.58,
   },
-  sectionTextWrap: {
-    flex: 1,
-    gap: 1,
+  draggingRow: {
+    borderColor: "rgba(163,214,149,0.9)",
+    backgroundColor: "rgba(53,226,20,0.16)",
   },
-  sectionLabel: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 14,
-  },
-  sectionHint: {
-    color: realTheme.colors.muted,
-    fontFamily: realTheme.fonts.bodyRegular,
-    fontSize: 12,
-  },
-  sectionCheck: {
+  blockToggle: {
     width: 24,
     height: 24,
     borderRadius: 999,
@@ -741,64 +1213,52 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  sectionCheckActive: {
+  blockToggleOn: {
     borderColor: "rgba(163,214,149,0.95)",
     backgroundColor: "#A3D695",
   },
-  info: {
+  blockTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  blockLabel: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 14,
+  },
+  blockMeta: {
     color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyRegular,
     fontSize: 12,
   },
-  previewWrap: {
-    gap: 12,
-  },
-  builderHeader: {
-    borderRadius: realTheme.radius.md,
+  dragHandle: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(198,255,175,0.22)",
-    backgroundColor: "rgba(7,9,12,0.6)",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    gap: 4,
+    borderColor: "rgba(237,237,238,0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(11,13,16,0.7)",
   },
-  brand: {
-    color: "#A3D695",
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 30,
-    letterSpacing: -0.7,
+  deleteBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255,120,120,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  builderTitle: {
-    color: "#A3D695",
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 32,
-    letterSpacing: -0.4,
-  },
-  builderStep: {
-    color: "#D4D9DF",
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 18,
-    marginTop: 4,
-  },
-  builderProgressTrack: {
-    marginTop: 4,
-    height: 6,
-    width: "100%",
-    borderRadius: 999,
-    backgroundColor: "rgba(194,212,194,0.2)",
-    overflow: "hidden",
-  },
-  builderProgressFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: "#A3D695",
+  previewWrap: {
+    gap: 10,
   },
   phoneShell: {
     borderRadius: 34,
     borderWidth: 1,
-    borderColor: "rgba(245,255,246,0.17)",
-    backgroundColor: "rgba(8,11,14,0.76)",
+    borderColor: "rgba(245,255,246,0.2)",
     padding: 10,
-    minHeight: 520,
+    minHeight: 560,
     shadowColor: "#9DE58A",
     shadowOpacity: 0.14,
     shadowRadius: 20,
@@ -810,11 +1270,22 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#0B0E12",
+    backgroundColor: "#0E1114",
+    overflow: "hidden",
+    gap: 8,
+    paddingBottom: 10,
+  },
+  siteSection: {
+    marginHorizontal: 10,
+    borderRadius: 16,
     overflow: "hidden",
   },
+  selectedSection: {
+    borderWidth: 2,
+    borderColor: "rgba(163,214,149,0.95)",
+  },
   previewHero: {
-    height: 250,
+    minHeight: 220,
     justifyContent: "flex-end",
   },
   previewHeroImage: {
@@ -822,69 +1293,134 @@ const styles = StyleSheet.create({
   },
   previewHeroOverlay: {
     padding: 14,
-    gap: 2,
+    gap: 4,
   },
   previewBrand: {
     color: "#EEE7D8",
     fontFamily: realTheme.fonts.title,
-    fontSize: 30,
+    fontSize: 28,
   },
   previewCaption: {
     color: "rgba(238,231,216,0.92)",
     fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 12,
+  },
+  previewHeroTitle: {
+    color: "#F7F8FA",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 20,
+    lineHeight: 26,
+    marginTop: 6,
+  },
+  previewHeroBody: {
+    color: "rgba(247,248,250,0.92)",
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  previewHeroButton: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  previewHeroButtonText: {
+    fontFamily: realTheme.fonts.bodySemiBold,
     fontSize: 13,
   },
-  previewCopyCard: {
-    margin: 12,
-    marginTop: -16,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(8,15,11,0.2)",
-    paddingVertical: 16,
-    paddingHorizontal: 14,
+  cardSection: {
+    padding: 12,
     gap: 8,
   },
-  previewHeadline: {
+  sectionTitleLarge: {
     fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 21,
-    lineHeight: 28,
-    letterSpacing: -0.2,
+    fontSize: 18,
+    lineHeight: 24,
   },
-  previewSub: {
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 15,
+  sectionBody: {
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 14,
     lineHeight: 21,
   },
-  sectionPillsWrap: {
+  metricRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
+    gap: 8,
   },
-  sectionPill: {
-    borderRadius: realTheme.radius.pill,
+  metricCard: {
+    flex: 1,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.3)",
-    backgroundColor: "rgba(10,14,12,0.2)",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    borderColor: "rgba(14,18,22,0.16)",
+    backgroundColor: "rgba(255,255,255,0.36)",
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    gap: 4,
   },
-  sectionPillText: {
-    color: "#122015",
+  metricIcon: {
+    color: "#173820",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 17,
+  },
+  metricText: {
+    textAlign: "center",
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  proofPills: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  proofPill: {
+    borderRadius: 999,
+    backgroundColor: "rgba(46,93,62,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(46,93,62,0.3)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  proofPillText: {
+    color: "#244A34",
     fontFamily: realTheme.fonts.bodySemiBold,
     fontSize: 12,
   },
-  previewWhatsButton: {
-    marginTop: 6,
-    borderRadius: realTheme.radius.pill,
-    backgroundColor: "#2E5D3E",
-    paddingVertical: 12,
+  faqRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(0,0,0,0.08)",
   },
-  previewWhatsText: {
-    color: "#ECF8F0",
+  faqQuestion: {
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 13,
+  },
+  inlineButton: {
+    marginTop: 4,
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  inlineButtonText: {
     fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 18,
-    letterSpacing: -0.2,
+    fontSize: 12,
+  },
+  editorCard: {
+    borderRadius: realTheme.radius.md,
+    borderWidth: 1,
+    borderColor: "rgba(163,214,149,0.35)",
+    backgroundColor: "rgba(12,16,18,0.88)",
+    padding: 12,
+    gap: 10,
+  },
+  editorTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 15,
   },
   pending: {
     color: realTheme.colors.green,
@@ -895,22 +1431,15 @@ const styles = StyleSheet.create({
     color: "#FF7E7E",
     fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 13,
+    paddingHorizontal: 4,
   },
   footerActions: {
-    position: "absolute",
-    left: 10,
-    right: 10,
-    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(8,11,14,0.96)",
     gap: 8,
-    borderRadius: realTheme.radius.md,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(8,11,14,0.94)",
-    padding: 10,
-  },
-  row: {
-    flexDirection: "row",
-    gap: 10,
   },
   action: {
     flex: 1,

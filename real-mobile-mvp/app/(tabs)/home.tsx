@@ -22,6 +22,11 @@ const promptSuggestions = [
   "Preciso de anúncios para vender mais este mês",
   "Criar landing page para lançamento de produto",
 ];
+const quickServices: Array<{ id: "site" | "ads" | "video"; label: string; prompt: string }> = [
+  { id: "site", label: "Criar site", prompt: "Quero criar um site" },
+  { id: "ads", label: "Fazer anúncio", prompt: "Quero fazer um anúncio" },
+  { id: "video", label: "Editar vídeo", prompt: "Quero editar um vídeo" },
+];
 
 export default function Home() {
   const auth = useAuth();
@@ -36,6 +41,7 @@ export default function Home() {
 
   const pulse = useRef(new Animated.Value(0)).current;
   const toastOpacity = useRef(new Animated.Value(0)).current;
+  const ctaAppear = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const value = typeof params.prompt === "string" ? params.prompt.trim() : "";
@@ -57,6 +63,16 @@ export default function Home() {
     const id = setInterval(() => setCursorVisible((v) => !v), 430);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    const hasText = prompt.trim().length > 0;
+    Animated.spring(ctaAppear, {
+      toValue: hasText ? 1 : 0,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 70,
+    }).start();
+  }, [prompt, ctaAppear]);
 
   useEffect(() => {
     if (prompt.trim().length > 0) return;
@@ -144,6 +160,14 @@ export default function Home() {
         ) : null}
 
         <View style={styles.formBlock}>
+          <View style={styles.quickServicesRow}>
+            {quickServices.map((item) => (
+              <Text key={item.id} style={styles.quickServiceCard} onPress={() => setPrompt(item.prompt)}>
+                {item.label}
+              </Text>
+            ))}
+          </View>
+
           <Animated.View style={[styles.magicPulse, { borderColor: pulseBorderColor, shadowOpacity: pulseShadowOpacity }]}> 
             <TextInput
               value={prompt}
@@ -168,7 +192,31 @@ export default function Home() {
             ))}
           </View>
 
-          <Button label={routing ? "Direcionando..." : "Começar agora"} onPress={() => void startFromPrompt()} disabled={!prompt.trim() || routing} />
+          <Animated.View
+            pointerEvents={prompt.trim() ? "auto" : "none"}
+            style={[
+              styles.ctaWrap,
+              {
+                opacity: ctaAppear,
+                transform: [
+                  {
+                    translateY: ctaAppear.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [14, 0],
+                    }),
+                  },
+                  {
+                    scale: ctaAppear.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.94, 1],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Button label={routing ? "Iniciando..." : "Iniciar"} onPress={() => void startFromPrompt()} disabled={!prompt.trim() || routing} />
+          </Animated.View>
         </View>
       </View>
 
@@ -194,6 +242,27 @@ const styles = StyleSheet.create({
   },
   formBlock: {
     gap: 14,
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 560,
+  },
+  quickServicesRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  quickServiceCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    borderRadius: 14,
+    backgroundColor: "rgba(13,16,22,0.78)",
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 13,
+    textAlign: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    overflow: "hidden",
   },
   missingTitle: {
     color: realTheme.colors.green,
@@ -272,5 +341,8 @@ const styles = StyleSheet.create({
     fontFamily: realTheme.fonts.bodyMedium,
     textAlign: "center",
     fontSize: 14,
+  },
+  ctaWrap: {
+    marginTop: 2,
   },
 });
