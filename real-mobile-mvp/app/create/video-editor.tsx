@@ -17,7 +17,6 @@ import { Screen } from "../../src/ui/components/Screen";
 import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
 
 const MAX_VIDEO_SECONDS = 300;
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".mp4", ".mov"];
 
 type PickedVideo = {
@@ -62,7 +61,7 @@ function getFriendlyError(raw: string): string {
     return "Este video nao esta em 9:16. Envie um video vertical (ex.: 1080x1920).";
   }
   if (lowered.includes("50 mb") || lowered.includes("50mb") || lowered.includes("limite")) {
-    return "O arquivo passou do limite permitido. Use um video de ate 50MB.";
+    return "Arquivo grande detectado. Vamos comprimir automaticamente e seguir com a edicao.";
   }
   if (lowered.includes("formato") || lowered.includes("mp4") || lowered.includes("mov")) {
     return "Formato invalido. Envie somente arquivos MP4 ou MOV.";
@@ -188,10 +187,6 @@ export default function VideoEditorCreateScreen() {
 
     const guessedType = asset.mimeType || "video/mp4";
     const fileSize = typeof asset.fileSize === "number" ? asset.fileSize : undefined;
-    if (fileSize && fileSize > MAX_VIDEO_BYTES) {
-      setError("Arquivo acima do limite de 50MB.");
-      return;
-    }
 
     setPicked({
       uri: asset.uri,
