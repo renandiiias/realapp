@@ -11,6 +11,7 @@ const serviceCards: Array<{
   hint: string;
   route: string;
   image: ImageSourcePropType;
+  ctaRight?: boolean;
 }> = [
   {
     id: "ads",
@@ -18,6 +19,7 @@ const serviceCards: Array<{
     hint: "Atrair clientes com anúncios",
     route: "/create/ads",
     image: require("../../assets/services/site-whatsapp.png"),
+    ctaRight: true,
   },
   {
     id: "site",
@@ -55,7 +57,7 @@ export default function Create() {
                       <Body style={styles.cardHint}>{item.hint}</Body>
                     </View>
 
-                    <View style={styles.ctaButton}>
+                    <View style={[styles.ctaButton, item.ctaRight ? styles.ctaRight : null]}>
                       <Text style={styles.ctaText}>Quero isso</Text>
                     </View>
                   </View>
@@ -96,14 +98,12 @@ const styles = StyleSheet.create({
   },
   overlay: {
     minHeight: 220,
-    height: "100%",
     paddingVertical: 22,
     paddingHorizontal: 18,
     justifyContent: "flex-end",
   },
   cardContent: {
     gap: 14,
-    justifyContent: "flex-end",
   },
   textWrap: {
     gap: 6,
@@ -132,6 +132,9 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 5 },
     elevation: 6,
+  },
+  ctaRight: {
+    alignSelf: "flex-end",
   },
   ctaText: {
     color: "#071102",
