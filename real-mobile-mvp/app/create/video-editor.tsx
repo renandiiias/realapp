@@ -298,10 +298,7 @@ export default function VideoEditorCreateScreen() {
 
     try {
       if (hasRemoteEditor && videoApiBase) {
-        const templateId = selectedTemplate || templates[0]?.id || "";
-        if (!templateId) {
-          throw new Error("Editor ainda carregando. Tente novamente em alguns segundos.");
-        }
+        const templateId = selectedTemplate || templates[0]?.id;
 
         const created = await submitCaptionJob({
           baseUrl: videoApiBase,

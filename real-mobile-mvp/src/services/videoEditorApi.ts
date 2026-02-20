@@ -65,12 +65,14 @@ export async function fetchTemplates(baseUrl: string): Promise<CaptionTemplate[]
 export async function submitCaptionJob(params: {
   baseUrl: string;
   file: { uri: string; name: string; type: string };
-  templateId: string;
+  templateId?: string;
   instructions?: string;
 }): Promise<VideoItem> {
   const safeBase = cleanBaseUrl(params.baseUrl);
   const body = new FormData();
-  body.append("caption_template_id", params.templateId);
+  if (params.templateId?.trim()) {
+    body.append("caption_template_id", params.templateId.trim());
+  }
   body.append(
     "video",
     {
