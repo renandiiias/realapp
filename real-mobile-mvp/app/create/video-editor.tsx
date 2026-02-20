@@ -5,7 +5,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Image, Modal, Platform, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, View } from "react-native";
 import type { JsonObject } from "../../src/queue/types";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { fetchTemplates, fetchVideo, getDownloadUrl, submitCaptionJob, type CaptionTemplate, type VideoItem } from "../../src/services/videoEditorApi";
@@ -158,7 +158,7 @@ export default function VideoEditorCreateScreen() {
     return () => clearInterval(timer);
   }, [hasRemoteEditor, video, videoApiBase]);
 
-  const canSubmit = Boolean(picked) && !submitting && (!hasRemoteEditor || Boolean(selectedTemplate));
+  const canSubmit = Boolean(picked) && !submitting;
   const runSafe = (task: () => Promise<void>) => {
     void task().catch((taskError) => {
       setError(pickerErrorMessage(taskError));
@@ -232,10 +232,6 @@ export default function VideoEditorCreateScreen() {
 
   const pickVideoFromLibrary = async () => {
     setError(null);
-    if (Platform.OS === "ios") {
-      await pickVideoWithDocumentPicker();
-      return;
-    }
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -307,8 +303,9 @@ export default function VideoEditorCreateScreen() {
 
     try {
       if (hasRemoteEditor && videoApiBase) {
-        if (!selectedTemplate) {
-          throw new Error("Selecione um template de legenda.");
+        const templateId = selectedTemplate || templates[0]?.id || "";
+        if (!templateId) {
+          throw new Error("Editor ainda carregando. Tente novamente em alguns segundos.");
         }
 
         const created = await submitCaptionJob({
@@ -318,7 +315,7 @@ export default function VideoEditorCreateScreen() {
             name: picked.name,
             type: picked.mimeType,
           },
-          templateId: selectedTemplate,
+          templateId,
           instructions: stylePrompt,
         });
         setVideo(created);
@@ -411,11 +408,11 @@ export default function VideoEditorCreateScreen() {
         <Card>
           <Kicker>Legendagem automatica PT-BR</Kicker>
           <Title>Video captions em 1 clique</Title>
-          <Body>Envie video vertical, escolha um estilo e receba o arquivo final pronto.</Body>
+          <Body>Envie video vertical e receba o arquivo final pronto.</Body>
         </Card>
 
         <Card>
-          <SubTitle>1) Escolha o video</SubTitle>
+          <SubTitle>Escolha o video</SubTitle>
           <View style={styles.actions}>
             <Button label="Enviar da galeria" onPress={() => runSafe(pickVideoFromLibrary)} style={styles.action} disabled={submitting} />
             <Button label="Gravar agora" onPress={() => runSafe(recordVideoNow)} variant="secondary" style={styles.action} disabled={submitting} />
@@ -437,43 +434,8 @@ export default function VideoEditorCreateScreen() {
           ) : null}
         </Card>
 
-        {hasRemoteEditor ? (
-          <Card>
-            <SubTitle>2) Template de legenda</SubTitle>
-            {loadingTemplates ? (
-              <View style={styles.loadingWrap}>
-                <ActivityIndicator color={realTheme.colors.green} />
-                <Body>Carregando templates...</Body>
-              </View>
-            ) : templates.length ? (
-              <View style={styles.templateGrid}>
-                {templates.map((template) => {
-                  const active = selectedTemplate === template.id;
-                  return (
-                    <View key={template.id} style={[styles.templateCard, active && styles.templateCardActive]}>
-                      <View style={styles.previewWrap}>
-                        <Image source={{ uri: template.preview_url }} style={styles.preview} resizeMode="cover" />
-                      </View>
-                      <Body style={styles.templateName}>{template.name}</Body>
-                      <Button
-                        label={active ? "Selecionado" : "Usar template"}
-                        onPress={() => setSelectedTemplate(template.id)}
-                        variant={active ? "primary" : "secondary"}
-                        size="small"
-                        style={styles.templateButton}
-                      />
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              <Body>Nenhum template disponivel.</Body>
-            )}
-          </Card>
-        ) : null}
-
         <Card>
-          <SubTitle>{hasRemoteEditor ? "3) Instrucoes (opcional)" : "2) Estilo da edicao (opcional)"}</SubTitle>
+          <SubTitle>Estilo da edicao (opcional)</SubTitle>
           <Field
             label="Instrução de estilo"
             value={stylePrompt}
@@ -523,9 +485,9 @@ export default function VideoEditorCreateScreen() {
             </View>
           ) : (
             <Button
-              label={hasRemoteEditor ? "Gerar video legendado" : "Enviar para edicao"}
+              label={hasRemoteEditor ? "Enviar video e processar" : "Enviar para edicao"}
               onPress={() => void submit()}
-              disabled={!canSubmit || loadingTemplates}
+              disabled={!canSubmit}
             />
           )}
           {error ? <Body style={styles.error}>{error}</Body> : null}
@@ -577,37 +539,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  templateGrid: {
-    gap: 12,
-    marginTop: 10,
-  },
-  templateCard: {
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    borderRadius: realTheme.radius.md,
-    backgroundColor: realTheme.colors.panelSoft,
-    padding: 10,
-    gap: 8,
-  },
-  templateCardActive: {
-    borderColor: realTheme.colors.green,
-  },
-  previewWrap: {
-    height: 140,
-    borderRadius: realTheme.radius.sm,
-    overflow: "hidden",
-    backgroundColor: "rgba(0,0,0,0.2)",
-  },
-  preview: {
-    width: "100%",
-    height: "100%",
-  },
-  templateName: {
-    color: realTheme.colors.text,
-  },
-  templateButton: {
-    width: "100%",
   },
   statusMain: {
     color: realTheme.colors.text,
