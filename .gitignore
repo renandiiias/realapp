@@ -11,3 +11,14 @@ reports/
 real-mobile-mvp/.expo/
 real-mobile-mvp/dist/
 real-mobile-mvp/web-build/
+
+# Local video-processing artifacts
+/auto_*.mp4
+/auto_fix_*.mp4
+/cut_*.mp4
+/final_*.mp4
+/final_fix_*.mp4
+/probe_*.mp4
+/subs_*.srt
+/server_videos_*/
+/video_review_*/
