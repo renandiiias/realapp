@@ -43,6 +43,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="create/ads" />
         <Stack.Screen name="create/site" />
+        <Stack.Screen name="create/video-editor" />
         <Stack.Screen name="create/content" />
         <Stack.Screen name="account/profile" />
         <Stack.Screen name="account/marketing" />

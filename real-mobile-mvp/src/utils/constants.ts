@@ -42,12 +42,14 @@ export const SERVICE_TYPES = {
   ADS: 'ads',
   SITE: 'site',
   CONTENT: 'content',
+  VIDEO_EDITOR: 'video_editor',
 } as const;
 
 export const SERVICE_TYPE_LABELS = {
   ads: 'Anúncios',
   site: 'Site',
   content: 'Conteúdo',
+  video_editor: 'Editor de Vídeo',
 } as const;
 
 export const TAB_BAR_HEIGHT = 70;

@@ -18,10 +18,11 @@ import { RealLogo } from "../src/ui/components/RealLogo";
 import { Screen } from "../src/ui/components/Screen";
 import { Body, Kicker, SubTitle, Title } from "../src/ui/components/Typography";
 
-type ServiceRoute = "/create/ads" | "/create/site";
+type ServiceRoute = "/create/ads" | "/create/site" | "/create/video-editor";
 
 function routeLabel(route: ServiceRoute): string {
   if (route === "/create/site") return "Site";
+  if (route === "/create/video-editor") return "Editor de Vídeo";
   return "Tráfego";
 }
 
@@ -203,6 +204,18 @@ export default function Welcome() {
             >
               <SubTitle style={styles.serviceTitle}>Site</SubTitle>
               <Body>Landing page para conversão.</Body>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.serviceItem}
+              activeOpacity={0.9}
+              onPress={() => {
+                setChosenRoute("/create/video-editor");
+                setShowServiceModal(false);
+              }}
+            >
+              <SubTitle style={styles.serviceTitle}>Editor de Vídeo</SubTitle>
+              <Body>Envie ou grave um vídeo curto para edição.</Body>
             </TouchableOpacity>
 
             <View style={[styles.serviceItem, styles.serviceDisabled]}>

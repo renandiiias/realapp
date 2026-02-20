@@ -1,4 +1,4 @@
-export type OrderType = "ads" | "site" | "content";
+export type OrderType = "ads" | "site" | "content" | "video_editor";
 
 export type OrderStatus =
   | "draft"
@@ -87,4 +87,3 @@ export type OrderDetail = Order & {
   deliverables: Deliverable[];
   approvals: Approval[];
 };
-

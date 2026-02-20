@@ -1,6 +1,6 @@
 create extension if not exists pgcrypto;
 
-create type order_type as enum ('ads', 'site', 'content');
+create type order_type as enum ('ads', 'site', 'content', 'video_editor');
 create type order_status as enum ('draft', 'waiting_payment', 'queued', 'in_progress', 'needs_approval', 'needs_info', 'blocked', 'done', 'failed');
 create type order_actor as enum ('client', 'codex', 'ops');
 create type deliverable_type as enum ('creative', 'copy', 'audience_summary', 'campaign_plan', 'wireframe', 'url_preview', 'calendar', 'posts', 'reels_script');

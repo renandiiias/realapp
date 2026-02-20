@@ -59,6 +59,11 @@ function getRequiredInfoMissing(order: Order): string | null {
     if (!p.themes) return "Quais temas principais?";
     return null;
   }
+  if (order.type === "video_editor") {
+    if (!p.backendInputPath && !p.localUri) return "Envie o video para iniciar a edicao.";
+    if (!p.durationSeconds) return "Qual a duracao do video?";
+    return null;
+  }
   return null;
 }
 
@@ -343,6 +348,25 @@ function generateContentDeliverables(db: MockDbV1, now: Date, order: Order): voi
   });
 }
 
+function generateVideoEditorDeliverables(db: MockDbV1, now: Date, order: Order): void {
+  const inputDuration = Number(order.payload.durationSeconds || 0);
+  const clampedDuration = Math.max(1, Math.min(15, Number.isFinite(inputDuration) ? inputDuration : 15));
+  upsertDeliverable(db, now, {
+    id: `${order.id}:url_preview`,
+    orderId: order.id,
+    type: "url_preview",
+    status: "submitted",
+    content: {
+      kind: "video",
+      summary: "Video editado com corte curto e preset social.",
+      stylePrompt: order.payload.stylePrompt ?? "",
+      durationSeconds: clampedDuration,
+      outputUrl: "https://preview.real.local/video/final.mp4",
+    },
+    assetUrls: ["https://preview.real.local/video/final.mp4"],
+  });
+}
+
 function getApproval(db: MockDbV1, orderId: string, deliverableId: string): Approval | null {
   const approvals = getOrderApprovals(db, orderId);
   return approvals.find((a) => a.deliverableId === deliverableId) ?? null;
@@ -383,6 +407,10 @@ function ensureGeneratedDeliverables(db: MockDbV1, now: Date, order: Order, opts
   }
   if (order.type === "site") {
     generateSiteDeliverables(db, now, order);
+    return;
+  }
+  if (order.type === "video_editor") {
+    generateVideoEditorDeliverables(db, now, order);
     return;
   }
   generateContentDeliverables(db, now, order);

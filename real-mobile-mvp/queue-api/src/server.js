@@ -38,7 +38,7 @@ function log(level, message, meta = {}) {
 }
 
 const createOrderSchema = z.object({
-  type: z.enum(["ads", "site", "content"]),
+  type: z.enum(["ads", "site", "content", "video_editor"]),
   title: z.string().min(2).max(180),
   summary: z.string().min(2).max(500),
   payload: z.record(z.any()).default({}),
@@ -738,11 +738,18 @@ app.post("/v1/ops/orders/:id/deliverables", requireRole(["worker", "ops"]), asyn
       const deliverableId = d.id || randomUUID();
       const upsert = await client.query(
         `insert into deliverables (id, order_id, type, status, content, asset_urls)
-         values ($1, $2, $3, $4, $5, $6)
+         values ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
          on conflict (order_id, type)
          do update set status = excluded.status, content = excluded.content, asset_urls = excluded.asset_urls
          returning id, type`,
-        [deliverableId, orderId, d.type, d.status, d.content || {}, d.assetUrls || []],
+        [
+          deliverableId,
+          orderId,
+          d.type,
+          d.status,
+          JSON.stringify(d.content || {}),
+          JSON.stringify(d.assetUrls || []),
+        ],
       );
 
       const persisted = upsert.rows[0];
@@ -767,6 +774,7 @@ app.post("/v1/ops/orders/:id/deliverables", requireRole(["worker", "ops"]), asyn
     return res.json(detail);
   } catch (error) {
     await client.query("rollback");
+    log("error", "ops_deliverables_failed", { orderId, error: String(error) });
     return res.status(500).json({ error: "Falha ao atualizar entregáveis." });
   } finally {
     client.release();

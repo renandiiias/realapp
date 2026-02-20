@@ -67,7 +67,7 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="orders"
           options={{
-            title: "Acompanhar",
+            title: "Ver resultados",
             tabBarIcon: ({ color, size }) => <Ionicons name="pulse-outline" color={color} size={size} />,
           }}
         />

@@ -3,6 +3,7 @@ import { Order, OrderStatus, JsonObject } from '../queue/types';
 export function orderTypeLabel(order: Order): string {
   if (order.type === 'ads') return 'Tráfego';
   if (order.type === 'site') return 'Site';
+  if (order.type === 'video_editor') return 'Editor de Vídeo';
   return 'Conteúdo';
 }
 

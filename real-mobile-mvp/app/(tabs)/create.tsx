@@ -1,106 +1,145 @@
 import { router } from "expo-router";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { useQueue } from "../../src/queue/QueueProvider";
+import { LinearGradient } from "expo-linear-gradient";
+import { ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View, type ImageSourcePropType } from "react-native";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
+import { Body } from "../../src/ui/components/Typography";
 
-const serviceCards: Array<{ id: "ads" | "site" | "content"; title: string; hint: string; route: string }> = [
-  { id: "ads", title: "Tráfego", hint: "Leads e vendas", route: "/create/ads" },
-  { id: "site", title: "Site", hint: "Landing de conversão", route: "/create/site" },
-  { id: "content", title: "Conteúdo", hint: "Plano de presença", route: "/create/content" },
+const serviceCards: Array<{
+  id: "ads" | "site" | "video_editor";
+  title: string;
+  hint: string;
+  route: string;
+  image: ImageSourcePropType;
+  ctaRight?: boolean;
+}> = [
+  {
+    id: "ads",
+    title: "Mais mensagens\nno WhatsApp",
+    hint: "Atrair clientes com anúncios",
+    route: "/create/ads",
+    image: require("../../assets/services/site-whatsapp.png"),
+    ctaRight: true,
+  },
+  {
+    id: "site",
+    title: "Sua página\npronta para vender",
+    hint: "Com botão direto pro WhatsApp",
+    route: "/create/site",
+    image: require("../../assets/services/ads-whatsapp.png"),
+  },
+  {
+    id: "video_editor",
+    title: "Vídeo curto\nque chama atenção",
+    hint: "Pronto para reels e anúncios",
+    route: "/create/video-editor",
+    image: require("../../assets/services/video-camera.png"),
+  },
 ];
 
 export default function Create() {
-  const queue = useQueue();
-
   return (
-    <Screen>
-      <View style={styles.content}>
-        <View style={styles.hero}>
-          <Kicker>Serviços</Kicker>
-          <Title>Escolha um caminho</Title>
-        </View>
-
-        <View style={styles.grid}>
+    <Screen style={styles.screen} plain>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.list}>
           {serviceCards.map((item) => (
-            <TouchableOpacity
-              key={item.id}
-              style={[styles.tile, item.id === "content" ? styles.tileDisabled : null]}
-              activeOpacity={item.id === "content" ? 1 : 0.9}
-              onPress={() => {
-                if (item.id === "content") return;
-                router.push(item.route as never);
-              }}
-            >
-              <View style={styles.tileTop}>
-                <SubTitle>{item.title}</SubTitle>
-                {item.id === "content" ? <Text style={styles.soonBadge}>Em breve</Text> : null}
-              </View>
-              <Body style={styles.hint}>{item.hint}</Body>
+            <TouchableOpacity key={item.id} style={styles.card} activeOpacity={0.92} onPress={() => router.push(item.route as never)}>
+              <ImageBackground source={item.image} style={styles.cardImage} imageStyle={styles.cardImageStyle}>
+                <LinearGradient
+                  colors={["rgba(4,8,14,0.82)", "rgba(4,8,14,0.48)", "rgba(4,8,14,0.88)"]}
+                  start={{ x: 0, y: 0.2 }}
+                  end={{ x: 1, y: 0.95 }}
+                  style={styles.overlay}
+                >
+                  <View style={styles.cardContent}>
+                    <View style={styles.textWrap}>
+                      <Text style={styles.cardTitle}>{item.title}</Text>
+                      <Body style={styles.cardHint}>{item.hint}</Body>
+                    </View>
+
+                    <View style={[styles.ctaButton, item.ctaRight ? styles.ctaRight : null]}>
+                      <Text style={styles.ctaText}>Quero isso</Text>
+                    </View>
+                  </View>
+                </LinearGradient>
+              </ImageBackground>
             </TouchableOpacity>
           ))}
         </View>
-
-        <View style={styles.planWrap}>
-          <Body style={styles.plan}>Plano: {queue.planActive ? "ativo" : "pendente"}</Body>
-        </View>
-      </View>
+      </ScrollView>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    paddingBottom: 0,
+  },
   content: {
+    paddingTop: 8,
+    paddingBottom: 26,
     gap: 14,
   },
-  hero: {
-    gap: 4,
+  list: {
+    gap: 14,
   },
-  grid: {
-    gap: 10,
-  },
-  tile: {
-    gap: 4,
+  card: {
+    borderRadius: 30,
+    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(53,226,20,0.32)",
-    backgroundColor: "rgba(15,16,19,0.9)",
-    borderRadius: realTheme.radius.md,
-    paddingVertical: 16,
-    paddingHorizontal: 14,
-    shadowColor: realTheme.colors.green,
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 4,
+    borderColor: "rgba(255,255,255,0.08)",
   },
-  tileDisabled: {
-    opacity: 0.78,
-    borderColor: "rgba(237,237,238,0.22)",
+  cardImage: {
+    minHeight: 220,
+    justifyContent: "flex-end",
   },
-  tileTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+  cardImageStyle: {
+    borderRadius: 30,
   },
-  soonBadge: {
-    color: realTheme.colors.green,
+  overlay: {
+    minHeight: 220,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
+    justifyContent: "flex-end",
+  },
+  cardContent: {
+    gap: 14,
+  },
+  textWrap: {
+    gap: 6,
+    width: "86%",
+  },
+  cardTitle: {
+    color: realTheme.colors.text,
     fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 11,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
+    fontSize: 23,
+    lineHeight: 31,
+    letterSpacing: -0.4,
   },
-  hint: {
-    color: realTheme.colors.muted,
+  cardHint: {
+    color: "rgba(237,237,238,0.9)",
+    fontSize: 16,
+    lineHeight: 24,
   },
-  planWrap: {
-    marginTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: realTheme.colors.line,
-    paddingTop: 10,
+  ctaButton: {
+    alignSelf: "flex-start",
+    backgroundColor: realTheme.colors.green,
+    borderRadius: realTheme.radius.pill,
+    paddingHorizontal: 30,
+    paddingVertical: 11,
+    shadowColor: realTheme.colors.green,
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 6,
   },
-  plan: {
-    color: realTheme.colors.muted,
-    fontSize: 13,
+  ctaRight: {
+    alignSelf: "flex-end",
+  },
+  ctaText: {
+    color: "#071102",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 17,
+    letterSpacing: -0.2,
   },
 });

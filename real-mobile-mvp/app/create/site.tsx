@@ -1,8 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   ImageBackground,
   ScrollView,
   StyleSheet,
@@ -16,260 +16,92 @@ import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Screen } from "../../src/ui/components/Screen";
-import { FlowStepIndicator } from "../../src/ui/components/FlowStepIndicator";
 import { Body, Kicker, Title } from "../../src/ui/components/Typography";
 
-type Option = {
+type BuilderStage = 0 | 1 | 2 | 3 | 4;
+
+type SectionDef = {
   id: string;
-  title: string;
+  label: string;
   hint: string;
-  image: string;
 };
 
-type Category = {
+type TemplateDef = {
   id: string;
-  title: string;
-  subtitle: string;
-  options: [Option, Option];
+  name: string;
+  hint: string;
+  hero: string;
+  chip: string;
+  chipText: string;
 };
 
-type Stage = "briefing" | "sections" | "generating" | "copy" | "review";
-
-type CopySection = {
-  id: string;
-  title: string;
-  copy: string;
+type BuilderPayload = {
+  businessName: string;
+  segment: string;
+  city: string;
+  templateId: string;
+  headline: string;
+  subheadline: string;
+  ctaLabel: string;
+  whatsappNumber: string;
+  heroImageUrl: string;
+  enabledSections: string[];
 };
 
-const briefingCategories: Category[] = [
+const stages: Array<{ id: BuilderStage; label: string; title: string; subtitle: string }> = [
+  { id: 0, label: "Negocio", title: "Dados do negocio", subtitle: "Base para montar sua pagina." },
+  { id: 1, label: "Visual", title: "Direcao visual", subtitle: "Escolha o estilo principal." },
+  { id: 2, label: "Conteudo", title: "Texto principal", subtitle: "Edite mensagem, CTA e contato." },
+  { id: 3, label: "Blocos", title: "Estrutura da pagina", subtitle: "Ative os blocos que quer publicar." },
+  { id: 4, label: "Publicar", title: "Preview final", subtitle: "Revise e publique sua pagina." },
+];
+
+const templates: TemplateDef[] = [
   {
-    id: "goal",
-    title: "Meta principal",
-    subtitle: "Qual resultado esse site precisa gerar primeiro?",
-    options: [
-      {
-        id: "goal-leads",
-        title: "Gerar leads",
-        hint: "Captar contatos qualificados para comercial",
-        image: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "goal-sales",
-        title: "Gerar vendas",
-        hint: "Levar para compra rápida com oferta clara",
-        image: "https://images.unsplash.com/photo-1556740749-887f6717d7e4?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
+    id: "artisan",
+    name: "Artesanal Premium",
+    hint: "Look quente, foco em produto e WhatsApp.",
+    hero: "https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=1200&q=80",
+    chip: "#E7E0D3",
+    chipText: "#1C1A18",
   },
   {
-    id: "audience",
-    title: "Perfil do público",
-    subtitle: "Esse site fala mais com quem?",
-    options: [
-      {
-        id: "audience-cold",
-        title: "Público frio",
-        hint: "Precisa educar e criar confiança do zero",
-        image: "https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "audience-warm",
-        title: "Público aquecido",
-        hint: "Já conhece a marca e precisa de empurrão final",
-        image: "https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
+    id: "clean",
+    name: "Clean Conversao",
+    hint: "Visual limpo, legibilidade alta, CTA forte.",
+    hero: "https://images.unsplash.com/photo-1556740749-887f6717d7e4?auto=format&fit=crop&w=1200&q=80",
+    chip: "#E5EDF6",
+    chipText: "#101821",
   },
   {
-    id: "tone",
-    title: "Tom de comunicação",
-    subtitle: "Qual linguagem combina mais com sua marca?",
-    options: [
-      {
-        id: "tone-authority",
-        title: "Autoridade",
-        hint: "Confiante, técnico e direto",
-        image: "https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "tone-human",
-        title: "Humano",
-        hint: "Próximo, acolhedor e conversacional",
-        image: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
-  {
-    id: "visual",
-    title: "Direção visual",
-    subtitle: "Que estética você quer no topo da página?",
-    options: [
-      {
-        id: "visual-clean",
-        title: "Clean premium",
-        hint: "Mais branco, respiro e elegância",
-        image: "https://images.unsplash.com/photo-1518005020951-eccb494ad742?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "visual-bold",
-        title: "Bold contraste",
-        hint: "Mais impacto e energia visual",
-        image: "https://images.unsplash.com/photo-1496449903678-68ddcb189a24?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
-  {
-    id: "cta",
-    title: "Canal de conversão",
-    subtitle: "Para onde o usuário vai ao clicar no CTA?",
-    options: [
-      {
-        id: "cta-whatsapp",
-        title: "WhatsApp",
-        hint: "Conversa rápida com equipe",
-        image: "https://images.unsplash.com/photo-1611746872915-64382b5c76da?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "cta-form",
-        title: "Formulário",
-        hint: "Captação estruturada de lead",
-        image: "https://images.unsplash.com/photo-1450101499163-c8848c66ca85?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
+    id: "bold",
+    name: "Bold Contraste",
+    hint: "Mais impacto visual e oferta em destaque.",
+    hero: "https://images.unsplash.com/photo-1496449903678-68ddcb189a24?auto=format&fit=crop&w=1200&q=80",
+    chip: "#F5D6CD",
+    chipText: "#26150F",
   },
 ];
 
-const sectionCategories: Category[] = [
-  {
-    id: "heroStyle",
-    title: "Exemplo de Hero",
-    subtitle: "Qual abertura você quer usar como base?",
-    options: [
-      {
-        id: "heroStyle-statement",
-        title: "Headline forte",
-        hint: "Frase de impacto + subheadline curta",
-        image: "https://images.unsplash.com/photo-1526498460520-4c246339dccb?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "heroStyle-offer",
-        title: "Hero com oferta",
-        hint: "Benefício + condição especial",
-        image: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
-  {
-    id: "proofStyle",
-    title: "Exemplo de Prova",
-    subtitle: "Como você quer mostrar credibilidade?",
-    options: [
-      {
-        id: "proofStyle-cases",
-        title: "Casos e histórias",
-        hint: "Antes e depois com contexto",
-        image: "https://images.unsplash.com/photo-1450101499163-c8848c66ca85?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "proofStyle-metrics",
-        title: "Resultados numéricos",
-        hint: "Gráficos e indicadores objetivos",
-        image: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
-  {
-    id: "offerStyle",
-    title: "Exemplo de Oferta",
-    subtitle: "Como apresentar a parte comercial?",
-    options: [
-      {
-        id: "offerStyle-single",
-        title: "Oferta única",
-        hint: "Uma decisão clara",
-        image: "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "offerStyle-plans",
-        title: "Planos comparados",
-        hint: "Duas ou três opções",
-        image: "https://images.unsplash.com/photo-1554224154-22dec7ec8818?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
-  {
-    id: "faqStyle",
-    title: "Exemplo de FAQ",
-    subtitle: "Que tipo de perguntas devem aparecer?",
-    options: [
-      {
-        id: "faqStyle-short",
-        title: "FAQ curto",
-        hint: "Poucas dúvidas críticas",
-        image: "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1400&q=80",
-      },
-      {
-        id: "faqStyle-complete",
-        title: "FAQ completo",
-        hint: "Cobrir objeções em detalhe",
-        image: "https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=1400&q=80",
-      },
-    ],
-  },
+const allSections: SectionDef[] = [
+  { id: "hero", label: "Hero", hint: "Abertura com promessa + CTA" },
+  { id: "benefits", label: "Beneficios", hint: "Motivos para escolher sua oferta" },
+  { id: "proof", label: "Prova", hint: "Depoimentos, numeros, resultados" },
+  { id: "offer", label: "Oferta", hint: "Condicao comercial e chamada" },
+  { id: "faq", label: "FAQ", hint: "Duvidas comuns antes da compra" },
 ];
 
-function selectedOption(categories: Category[], map: Record<string, string>, categoryId: string): Option | null {
-  const category = categories.find((item) => item.id === categoryId);
-  if (!category) return null;
-  return category.options.find((option) => option.id === map[categoryId]) ?? null;
+const defaultSections = allSections.map((item) => item.id);
+
+function sanitizeWhats(raw: string): string {
+  return raw.replace(/[^\d]/g, "");
 }
 
-function buildGeneratedCopy(
-  briefingChoices: Record<string, string>,
-  sectionChoices: Record<string, string>,
-  prompt: string,
-): CopySection[] {
-  const goal = selectedOption(briefingCategories, briefingChoices, "goal")?.title ?? "Gerar resultados";
-  const audience = selectedOption(briefingCategories, briefingChoices, "audience")?.title ?? "público ideal";
-  const tone = briefingChoices.tone === "tone-authority" ? "autoridade" : "humano";
-
-  const heroVariant = sectionChoices.heroStyle === "heroStyle-offer";
-  const proofVariant = sectionChoices.proofStyle === "proofStyle-metrics";
-  const offerVariant = sectionChoices.offerStyle === "offerStyle-plans";
-  const faqVariant = sectionChoices.faqStyle === "faqStyle-complete";
-
-  const heroCopy = heroVariant
-    ? `Transforme ${goal.toLowerCase()} com uma oferta clara e acionável para ${audience.toLowerCase()}.`
-    : `Uma mensagem forte para ${goal.toLowerCase()} e fazer ${audience.toLowerCase()} agir agora.`;
-
-  const proofCopy = proofVariant
-    ? "Resultados concretos: métricas reais, evolução consistente e impacto comprovado em números."
-    : "Casos reais de clientes que aplicaram o método e atingiram resultados com segurança.";
-
-  const offerCopy = offerVariant
-    ? "Escolha o plano ideal para o seu momento e avance com uma estrutura comercial previsível."
-    : "Uma proposta direta, com escopo claro e próximos passos definidos para começar imediatamente.";
-
-  const faqCopy = faqVariant
-    ? "Respondemos as principais dúvidas sobre prazo, investimento, escopo, suporte e próximos passos."
-    : "As dúvidas essenciais para decisão rápida: prazo, investimento e como começar.";
-
-  const ctaCopy = briefingChoices.cta === "cta-form"
-    ? "Preencha o formulário e receba um plano de ação personalizado."
-    : "Clique no WhatsApp e fale agora com nosso time.";
-
-  return [
-    { id: "hero", title: "Hero", copy: heroCopy },
-    { id: "benefits", title: "Benefícios", copy: `Estrutura pensada para ${goal.toLowerCase()} com comunicação em tom ${tone}.` },
-    { id: "proof", title: "Prova", copy: proofCopy },
-    { id: "offer", title: "Oferta", copy: offerCopy },
-    { id: "faq", title: "FAQ", copy: faqCopy },
-    { id: "cta", title: "CTA", copy: ctaCopy },
-    { id: "context", title: "Contexto", copy: prompt || "Projeto orientado por briefing visual e escolhas estratégicas da marca." },
-  ];
+function includesSection(list: string[], id: string): boolean {
+  return list.includes(id);
 }
 
-export default function SiteWizard() {
+export default function SiteWebsiteBuilder() {
   const queue = useQueue();
   const auth = useAuth();
   const params = useLocalSearchParams<{ orderId?: string; prompt?: string }>();
@@ -277,333 +109,463 @@ export default function SiteWizard() {
   const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
   const editing = orderId ? queue.getOrder(orderId) : null;
 
-  const [stage, setStage] = useState<Stage>("briefing");
-  const [briefingIndex, setBriefingIndex] = useState(0);
-  const [sectionsIndex, setSectionsIndex] = useState(0);
-  const [briefingChoices, setBriefingChoices] = useState<Record<string, string>>({});
-  const [sectionChoices, setSectionChoices] = useState<Record<string, string>>({});
-  const [copySections, setCopySections] = useState<CopySection[]>([]);
+  const [stage, setStage] = useState<BuilderStage>(0);
+  const [businessName, setBusinessName] = useState("");
+  const [segment, setSegment] = useState("");
+  const [city, setCity] = useState("");
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
+  const [templateId, setTemplateId] = useState<string>(templates[0]!.id);
+
+  const [headline, setHeadline] = useState("Sua pagina pronta para vender mais no WhatsApp");
+  const [subheadline, setSubheadline] = useState("Atraia clientes certos com mensagem clara e botao de acao imediato.");
+  const [ctaLabel, setCtaLabel] = useState("Pedir no WhatsApp");
+  const [whatsappNumber, setWhatsappNumber] = useState("");
+  const [heroImageUrl, setHeroImageUrl] = useState("");
+
+  const [enabledSections, setEnabledSections] = useState<string[]>(defaultSections);
+
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!editing) return;
-
     const payload = editing.payload as Record<string, unknown>;
 
-    if (payload.selectedChoices && typeof payload.selectedChoices === "object" && !Array.isArray(payload.selectedChoices)) {
-      setBriefingChoices(payload.selectedChoices as Record<string, string>);
-    }
-
-    if (payload.sectionChoices && typeof payload.sectionChoices === "object" && !Array.isArray(payload.sectionChoices)) {
-      setSectionChoices(payload.sectionChoices as Record<string, string>);
-    }
-
-    if (Array.isArray(payload.generatedCopy)) {
-      const valid = (payload.generatedCopy as unknown[])
-        .map((item) => {
-          if (!item || typeof item !== "object") return null;
-          const raw = item as Record<string, unknown>;
-          if (typeof raw.id !== "string" || typeof raw.title !== "string" || typeof raw.copy !== "string") return null;
-          return { id: raw.id, title: raw.title, copy: raw.copy } as CopySection;
-        })
-        .filter((item): item is CopySection => Boolean(item));
-      if (valid.length > 0) {
-        setCopySections(valid);
-        setStage("copy");
+    const builder = payload.builder;
+    if (builder && typeof builder === "object" && !Array.isArray(builder)) {
+      const data = builder as Partial<BuilderPayload>;
+      if (typeof data.businessName === "string") setBusinessName(data.businessName);
+      if (typeof data.segment === "string") setSegment(data.segment);
+      if (typeof data.city === "string") setCity(data.city);
+      if (typeof data.templateId === "string" && templates.some((item) => item.id === data.templateId)) setTemplateId(data.templateId);
+      if (typeof data.headline === "string") setHeadline(data.headline);
+      if (typeof data.subheadline === "string") setSubheadline(data.subheadline);
+      if (typeof data.ctaLabel === "string") setCtaLabel(data.ctaLabel);
+      if (typeof data.whatsappNumber === "string") setWhatsappNumber(data.whatsappNumber);
+      if (typeof data.heroImageUrl === "string") setHeroImageUrl(data.heroImageUrl);
+      if (Array.isArray(data.enabledSections)) {
+        const valid = data.enabledSections.filter((item): item is string => typeof item === "string");
+        if (valid.length > 0) setEnabledSections(valid);
       }
+      return;
+    }
+
+    if (typeof payload.headline === "string") setHeadline(payload.headline);
+    if (typeof payload.cta === "string") setCtaLabel(payload.cta);
+    if (Array.isArray(payload.sections)) {
+      const mapped = payload.sections
+        .map((item) => String(item).toLowerCase())
+        .map((value) => allSections.find((section) => section.label.toLowerCase() === value)?.id)
+        .filter((item): item is string => Boolean(item));
+      if (mapped.length > 0) setEnabledSections(mapped);
     }
   }, [editing]);
 
   useEffect(() => {
-    if (stage !== "generating") return;
+    if (!prompt) return;
+    setSubheadline((current) => (current === "Atraia clientes certos com mensagem clara e botao de acao imediato." ? prompt : current));
+  }, [prompt]);
 
-    const id = setTimeout(() => {
-      const generated = buildGeneratedCopy(briefingChoices, sectionChoices, prompt);
-      setCopySections(generated);
-      setStage("copy");
-    }, 2400);
+  const selectedTemplate = useMemo(() => templates.find((item) => item.id === templateId) ?? templates[0]!, [templateId]);
 
-    return () => clearTimeout(id);
-  }, [stage, briefingChoices, sectionChoices, prompt]);
+  const progress = useMemo(() => {
+    return Math.round(((stage + 1) / stages.length) * 100);
+  }, [stage]);
 
-  const totalFlowSteps = briefingCategories.length + sectionCategories.length + 3;
+  const canAdvance = useMemo(() => {
+    if (stage === 0) return businessName.trim().length > 1 && segment.trim().length > 1;
+    if (stage === 1) return Boolean(templateId);
+    if (stage === 2) return headline.trim().length > 4 && ctaLabel.trim().length > 2;
+    if (stage === 3) return enabledSections.length > 0;
+    return true;
+  }, [stage, businessName, segment, templateId, headline, ctaLabel, enabledSections]);
 
-  const currentFlowStep = useMemo(() => {
-    if (stage === "briefing") return briefingIndex + 1;
-    if (stage === "sections") return briefingCategories.length + sectionsIndex + 1;
-    if (stage === "generating") return briefingCategories.length + sectionCategories.length + 1;
-    if (stage === "copy") return briefingCategories.length + sectionCategories.length + 2;
-    return totalFlowSteps;
-  }, [stage, briefingIndex, sectionsIndex, totalFlowSteps]);
-
-  const stageLabel =
-    stage === "briefing"
-      ? "Briefing estratégico"
-      : stage === "sections"
-      ? "Escolha de seções"
-      : stage === "generating"
-      ? "IA escrevendo"
-      : stage === "copy"
-      ? "Edição da copy"
-      : "Revisão e envio";
-
-  const objective = useMemo(() => {
-    const goal = selectedOption(briefingCategories, briefingChoices, "goal")?.title ?? "Gerar resultado";
-    const audience = selectedOption(briefingCategories, briefingChoices, "audience")?.title ?? "público ideal";
-    return prompt || `${goal} para ${audience.toLowerCase()}.`;
-  }, [briefingChoices, prompt]);
-
-  const headline = useMemo(() => {
-    const visual = selectedOption(briefingCategories, briefingChoices, "visual")?.title ?? "Site";
-    const tone = selectedOption(briefingCategories, briefingChoices, "tone")?.title ?? "direto";
-    return `${visual} com linguagem ${tone.toLowerCase()}`;
-  }, [briefingChoices]);
-
-  const cta = useMemo(() => {
-    const ctaId = briefingChoices.cta;
-    if (ctaId === "cta-form") return "Quero receber proposta";
-    return "Falar no WhatsApp";
-  }, [briefingChoices]);
-
-  const sections = useMemo(() => copySections.map((item) => item.title), [copySections]);
-
-  const title = useMemo(() => `Site: ${headline.slice(0, 36)}`, [headline]);
-
-  const summary = useMemo(() => {
-    const chosen = Object.keys(briefingChoices).length + Object.keys(sectionChoices).length;
-    return `Objetivo: ${objective} · Escolhas: ${chosen}`;
-  }, [objective, briefingChoices, sectionChoices]);
-
-  const buildPayload = () => ({
-    objective,
-    headline,
-    cta,
-    sections,
-    selectedChoices: briefingChoices,
-    sectionChoices,
-    generatedCopy: copySections,
+  const buildPayload = (): BuilderPayload => ({
+    businessName: businessName.trim(),
+    segment: segment.trim(),
+    city: city.trim(),
+    templateId,
+    headline: headline.trim(),
+    subheadline: subheadline.trim(),
+    ctaLabel: ctaLabel.trim(),
+    whatsappNumber: sanitizeWhats(whatsappNumber),
+    heroImageUrl: heroImageUrl.trim(),
+    enabledSections,
   });
 
+  const orderTitle = useMemo(() => {
+    const name = businessName.trim() || segment.trim() || "Website Builder";
+    return `Site: ${name}`;
+  }, [businessName, segment]);
+
+  const orderSummary = useMemo(() => {
+    const location = city.trim() ? ` em ${city.trim()}` : "";
+    return `${segment.trim() || "Negocio"}${location} · Template ${selectedTemplate.name}`;
+  }, [segment, city, selectedTemplate.name]);
+
+  const buildOrderData = () => {
+    const payload = buildPayload();
+    return {
+      title: orderTitle,
+      summary: orderSummary,
+      payload: {
+        builder: payload,
+        headline: payload.headline,
+        cta: payload.ctaLabel,
+        sections: payload.enabledSections,
+        objective: `${payload.segment || "Negocio"}${payload.city ? ` em ${payload.city}` : ""}`,
+      },
+    };
+  };
+
   const saveDraft = async () => {
-    const payload = buildPayload();
-    if (orderId) {
-      await queue.updateOrder(orderId, { title, summary, payload });
+    setError(null);
+    setSavingDraft(true);
+    try {
+      const data = buildOrderData();
+      if (orderId) {
+        await queue.updateOrder(orderId, data);
+      } else {
+        await queue.createOrder({ type: "site", ...data });
+      }
       router.navigate("/orders");
-      return;
+    } catch (saveError) {
+      const message = saveError instanceof Error ? saveError.message : "Falha ao salvar rascunho.";
+      setError(message);
+    } finally {
+      setSavingDraft(false);
     }
-    await queue.createOrder({ type: "site", title, summary, payload });
-    router.navigate("/orders");
   };
 
-  const submit = async () => {
-    const payload = buildPayload();
-    let id = orderId;
+  const publish = async () => {
+    setError(null);
+    setPublishing(true);
+    try {
+      const data = buildOrderData();
+      let targetId = orderId;
+      if (!targetId) {
+        const created = await queue.createOrder({ type: "site", ...data });
+        targetId = created.id;
+      } else {
+        await queue.updateOrder(targetId, data);
+      }
 
-    if (!id) {
-      const created = await queue.createOrder({ type: "site", title, summary, payload });
-      id = created.id;
-    } else {
-      await queue.updateOrder(id, { title, summary, payload });
+      if (!auth.profileProductionComplete) {
+        router.push({ pathname: "/onboarding/ray-x", params: { mode: "production", pendingOrderId: targetId } });
+        return;
+      }
+
+      await queue.submitOrder(targetId);
+      router.navigate("/orders");
+    } catch (publishError) {
+      const message = publishError instanceof Error ? publishError.message : "Falha ao publicar.";
+      setError(message);
+    } finally {
+      setPublishing(false);
     }
-
-    if (!auth.profileProductionComplete) {
-      router.push({ pathname: "/onboarding/ray-x", params: { mode: "production", pendingOrderId: id } });
-      return;
-    }
-
-    await queue.submitOrder(id);
-    router.navigate("/orders");
   };
 
-  const chooseBriefing = (optionId: string) => {
-    const current = briefingCategories[briefingIndex];
-    if (!current) return;
-    setBriefingChoices((prev) => ({ ...prev, [current.id]: optionId }));
-
-    if (briefingIndex >= briefingCategories.length - 1) {
-      setStage("sections");
-      setSectionsIndex(0);
-      return;
-    }
-    setBriefingIndex((idx) => idx + 1);
+  const goNext = () => {
+    if (!canAdvance || stage >= 4) return;
+    setStage((stage + 1) as BuilderStage);
   };
 
-  const chooseSection = (optionId: string) => {
-    const current = sectionCategories[sectionsIndex];
-    if (!current) return;
-    setSectionChoices((prev) => ({ ...prev, [current.id]: optionId }));
-
-    if (sectionsIndex >= sectionCategories.length - 1) {
-      setStage("generating");
-      return;
-    }
-    setSectionsIndex((idx) => idx + 1);
+  const goBack = () => {
+    if (stage <= 0) return;
+    setStage((stage - 1) as BuilderStage);
   };
 
-  const openEditor = (section: CopySection) => {
-    setEditingId(section.id);
-    setEditingText(section.copy);
+  const toggleSection = (sectionId: string) => {
+    setEnabledSections((prev) => {
+      if (prev.includes(sectionId)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((item) => item !== sectionId);
+      }
+      return [...prev, sectionId];
+    });
   };
 
-  const applyEdit = () => {
-    if (!editingId) return;
-    setCopySections((prev) => prev.map((item) => (item.id === editingId ? { ...item, copy: editingText.trim() || item.copy } : item)));
-    setEditingId(null);
-    setEditingText("");
-  };
+  const previewHero = heroImageUrl.trim() || selectedTemplate.hero;
+  const stageMeta = stages[stage];
 
-  const currentBriefing = briefingCategories[briefingIndex];
-  const currentSection = sectionCategories[sectionsIndex];
+  const renderStage = () => {
+    if (stage === 0) {
+      return (
+        <View style={styles.card}>
+          <Kicker>Etapa 1</Kicker>
+          <Title>{stageMeta.title}</Title>
+          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
 
-  const renderChoicePair = (category: Category, onChoose: (optionId: string) => void) => (
-    <>
-      <TouchableOpacity activeOpacity={0.92} onPress={() => onChoose(category.options[0].id)} style={styles.choiceCard}>
-        <ImageBackground source={{ uri: category.options[0].image }} style={styles.choiceImage} imageStyle={styles.choiceImageRadius}>
-          <View style={styles.overlay}>
-            <Text style={styles.choiceTag}>OPCAO A</Text>
-            <Text style={styles.choiceTitle}>{category.options[0].title}</Text>
-            <Text style={styles.choiceHint}>{category.options[0].hint}</Text>
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Nome do negocio</Text>
+            <TextInput
+              value={businessName}
+              onChangeText={setBusinessName}
+              style={styles.input}
+              placeholder="Ex.: Delicia Bakery"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
           </View>
-        </ImageBackground>
-      </TouchableOpacity>
 
-      <TouchableOpacity activeOpacity={0.92} onPress={() => onChoose(category.options[1].id)} style={styles.choiceCard}>
-        <ImageBackground source={{ uri: category.options[1].image }} style={styles.choiceImage} imageStyle={styles.choiceImageRadius}>
-          <View style={styles.overlay}>
-            <Text style={styles.choiceTag}>OPCAO B</Text>
-            <Text style={styles.choiceTitle}>{category.options[1].title}</Text>
-            <Text style={styles.choiceHint}>{category.options[1].hint}</Text>
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Segmento</Text>
+            <TextInput
+              value={segment}
+              onChangeText={setSegment}
+              style={styles.input}
+              placeholder="Ex.: Padaria artesanal"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
           </View>
-        </ImageBackground>
-      </TouchableOpacity>
-    </>
-  );
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Cidade (opcional)</Text>
+            <TextInput
+              value={city}
+              onChangeText={setCity}
+              style={styles.input}
+              placeholder="Ex.: Rio de Janeiro"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
+          </View>
+        </View>
+      );
+    }
+
+    if (stage === 1) {
+      return (
+        <View style={styles.card}>
+          <Kicker>Etapa 2</Kicker>
+          <Title>{stageMeta.title}</Title>
+          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+
+          <View style={styles.templatesList}>
+            {templates.map((template) => {
+              const active = template.id === templateId;
+              return (
+                <TouchableOpacity
+                  key={template.id}
+                  onPress={() => setTemplateId(template.id)}
+                  activeOpacity={0.9}
+                  style={[styles.templateCard, active ? styles.templateCardActive : null]}
+                >
+                  <ImageBackground source={{ uri: template.hero }} style={styles.templateHero} imageStyle={styles.templateHeroImage}>
+                    <LinearGradient
+                      colors={["rgba(9,11,14,0.1)", "rgba(9,11,14,0.76)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.templateOverlay}
+                    >
+                      <View style={[styles.templateChip, { backgroundColor: template.chip }]}> 
+                        <Text style={[styles.templateChipText, { color: template.chipText }]}>{template.name}</Text>
+                      </View>
+                    </LinearGradient>
+                  </ImageBackground>
+                  <Text style={styles.templateHint}>{template.hint}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      );
+    }
+
+    if (stage === 2) {
+      return (
+        <View style={styles.card}>
+          <Kicker>Etapa 3</Kicker>
+          <Title>{stageMeta.title}</Title>
+          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Headline</Text>
+            <TextInput
+              value={headline}
+              onChangeText={setHeadline}
+              style={styles.input}
+              placeholder="Mensagem principal"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Subheadline</Text>
+            <TextInput
+              value={subheadline}
+              onChangeText={setSubheadline}
+              style={[styles.input, styles.inputMulti]}
+              multiline
+              textAlignVertical="top"
+              placeholder="Complemento da oferta"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Texto do botao CTA</Text>
+            <TextInput
+              value={ctaLabel}
+              onChangeText={setCtaLabel}
+              style={styles.input}
+              placeholder="Ex.: Pedir no WhatsApp"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>WhatsApp (somente numeros)</Text>
+            <TextInput
+              value={whatsappNumber}
+              onChangeText={setWhatsappNumber}
+              style={styles.input}
+              keyboardType="phone-pad"
+              placeholder="Ex.: 5521999998888"
+              placeholderTextColor="rgba(237,237,238,0.45)"
+            />
+          </View>
+
+          <View style={styles.fieldWrap}>
+            <Text style={styles.label}>Imagem principal (URL opcional)</Text>
+            <TextInput
+              value={heroImageUrl}
+              onChangeText={setHeroImageUrl}
+              style={styles.input}
+              placeholder="https://..."
+              placeholderTextColor="rgba(237,237,238,0.45)"
+              autoCapitalize="none"
+            />
+          </View>
+        </View>
+      );
+    }
+
+    if (stage === 3) {
+      return (
+        <View style={styles.card}>
+          <Kicker>Etapa 4</Kicker>
+          <Title>{stageMeta.title}</Title>
+          <Body style={styles.helper}>{stageMeta.subtitle}</Body>
+
+          <View style={styles.sectionsList}>
+            {allSections.map((section) => {
+              const active = includesSection(enabledSections, section.id);
+              return (
+                <TouchableOpacity
+                  key={section.id}
+                  onPress={() => toggleSection(section.id)}
+                  activeOpacity={0.9}
+                  style={[styles.sectionRow, active ? styles.sectionRowActive : null]}
+                >
+                  <View style={styles.sectionTextWrap}>
+                    <Text style={styles.sectionLabel}>{section.label}</Text>
+                    <Text style={styles.sectionHint}>{section.hint}</Text>
+                  </View>
+                  <View style={[styles.sectionCheck, active ? styles.sectionCheckActive : null]}>
+                    {active ? <Ionicons name="checkmark" size={15} color="#061005" /> : null}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Body style={styles.info}>Minimo de 1 bloco ativo para publicar.</Body>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.previewWrap}>
+        <View style={styles.builderHeader}>
+          <Text style={styles.brand}>Real*</Text>
+          <Text style={styles.builderTitle}>Criando sua pagina</Text>
+          <Text style={styles.builderStep}>Passo {stage + 1} de 5</Text>
+          <View style={styles.builderProgressTrack}>
+            <View style={[styles.builderProgressFill, { width: `${progress}%` }]} />
+          </View>
+        </View>
+
+        <View style={styles.phoneShell}>
+          <View style={styles.phoneInner}>
+            <ImageBackground source={{ uri: previewHero }} style={styles.previewHero} imageStyle={styles.previewHeroImage}>
+              <LinearGradient
+                colors={["rgba(11,12,14,0.76)", "rgba(11,12,14,0.2)", "rgba(11,12,14,0.84)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.previewHeroOverlay}
+              >
+                <Text style={styles.previewBrand}>{businessName.trim() || "Sua Marca"}</Text>
+                <Text style={styles.previewCaption}>{segment.trim() || "Seu negocio"}</Text>
+              </LinearGradient>
+            </ImageBackground>
+
+            <View style={[styles.previewCopyCard, { backgroundColor: selectedTemplate.chip }]}> 
+              <Text style={[styles.previewHeadline, { color: selectedTemplate.chipText }]}>{headline.trim() || "Sua headline"}</Text>
+              <Text style={[styles.previewSub, { color: `${selectedTemplate.chipText}DD` }]}>{subheadline.trim() || "Seu texto de apoio"}</Text>
+
+              <View style={styles.sectionPillsWrap}>
+                {enabledSections.map((sectionId) => {
+                  const section = allSections.find((item) => item.id === sectionId);
+                  if (!section) return null;
+                  return (
+                    <View key={sectionId} style={styles.sectionPill}>
+                      <Text style={styles.sectionPillText}>{section.label}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+
+              <View style={styles.previewWhatsButton}>
+                <Text style={styles.previewWhatsText}>{ctaLabel.trim() || "Falar no WhatsApp"}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {!auth.profileProductionComplete ? (
+          <Body style={styles.pending}>Para publicar, complete seu cadastro no Raio-X.</Body>
+        ) : null}
+      </View>
+    );
+  };
 
   return (
     <Screen style={styles.screenDense}>
-      {stage === "briefing" && currentBriefing ? (
-        <View style={styles.fullscreenWrap}>
-          <View style={styles.topBar}>
-            <Kicker>Briefing de site</Kicker>
-            <Title>Este ou Aquele</Title>
-            <Body style={styles.subtitle}>{currentBriefing.title}</Body>
-            <Body style={styles.helper}>{currentBriefing.subtitle}</Body>
-            <FlowStepIndicator step={currentFlowStep} total={totalFlowSteps} label={stageLabel} />
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <View style={styles.progressCard}>
+          <View style={styles.progressTopRow}>
+            <Text style={styles.progressTitle}>Website Builder</Text>
+            <Text style={styles.progressPct}>{progress}%</Text>
           </View>
-          {renderChoicePair(currentBriefing, chooseBriefing)}
-        </View>
-      ) : null}
-
-      {stage === "sections" && currentSection ? (
-        <View style={styles.fullscreenWrap}>
-          <View style={styles.topBar}>
-            <Kicker>Modelo de seções</Kicker>
-            <Title>Este ou Aquele</Title>
-            <Body style={styles.subtitle}>{currentSection.title}</Body>
-            <Body style={styles.helper}>{currentSection.subtitle}</Body>
-            <FlowStepIndicator step={currentFlowStep} total={totalFlowSteps} label={stageLabel} />
-          </View>
-          {renderChoicePair(currentSection, chooseSection)}
-        </View>
-      ) : null}
-
-      {stage === "generating" ? (
-        <View style={styles.generatingWrap}>
-          <View style={styles.topBar}>
-            <Kicker>IA em ação</Kicker>
-            <Title>Gerando sua copy</Title>
-            <Body style={styles.helper}>Criando textos personalizados com base nas suas escolhas...</Body>
-            <FlowStepIndicator step={currentFlowStep} total={totalFlowSteps} label={stageLabel} />
-          </View>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color={realTheme.colors.green} />
-            <Text style={styles.loadingText}>Analisando briefing visual</Text>
-            <Text style={styles.loadingText}>Escrevendo seções do site</Text>
-            <Text style={styles.loadingText}>Ajustando tom e CTA</Text>
+          <Text style={styles.progressMeta}>Etapa {stage + 1} de {stages.length} · {stageMeta.label}</Text>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${progress}%` }]} />
           </View>
         </View>
-      ) : null}
 
-      {stage === "copy" ? (
-        <ScrollView contentContainerStyle={styles.reviewContent} keyboardShouldPersistTaps="handled">
-          <View style={styles.topBar}>
-            <Kicker>Copy gerada</Kicker>
-            <Title>Edite seção por seção</Title>
-            <Body style={styles.helper}>Toque no lápis para ajustar cada texto.</Body>
-            <FlowStepIndicator step={currentFlowStep} total={totalFlowSteps} label={stageLabel} />
+        {renderStage()}
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      </ScrollView>
+
+      <View style={styles.footerActions}>
+        {stage < 4 ? (
+          <View style={styles.row}>
+            <Button label="Voltar" variant="secondary" onPress={goBack} disabled={stage === 0} style={styles.action} />
+            <Button label="Proximo" onPress={goNext} disabled={!canAdvance} style={styles.action} />
           </View>
-
-          {copySections.map((section) => (
-            <View key={section.id} style={styles.copyCard}>
-              <View style={styles.copyHead}>
-                <Text style={styles.copyTitle}>{section.title}</Text>
-                <TouchableOpacity style={styles.editButton} onPress={() => openEditor(section)}>
-                  <Ionicons name="pencil" size={14} color={realTheme.colors.text} />
-                  <Text style={styles.editText}>Editar</Text>
-                </TouchableOpacity>
-              </View>
-
-              {editingId === section.id ? (
-                <>
-                  <TextInput
-                    value={editingText}
-                    onChangeText={setEditingText}
-                    style={styles.editorInput}
-                    multiline
-                    textAlignVertical="top"
-                  />
-                  <View style={styles.editorActions}>
-                    <Button label="Cancelar" variant="secondary" onPress={() => setEditingId(null)} style={styles.action} />
-                    <Button label="Salvar" onPress={applyEdit} style={styles.action} />
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.copyText}>{section.copy}</Text>
-              )}
+        ) : (
+          <>
+            <View style={styles.row}>
+              <Button label="Editar bloco" variant="secondary" onPress={() => setStage(3)} style={styles.action} />
+              <Button label="Publicar" onPress={publish} loading={publishing} style={styles.action} />
             </View>
-          ))}
-
-          <Button label="Continuar para revisão" onPress={() => setStage("review")} />
-        </ScrollView>
-      ) : null}
-
-      {stage === "review" ? (
-        <ScrollView contentContainerStyle={styles.reviewContent} keyboardShouldPersistTaps="handled">
-          <View style={styles.topBar}>
-            <Kicker>Revisão final</Kicker>
-            <Title>Enviar ou salvar</Title>
-            <Body style={styles.helper}>Tudo pronto para seguir para produção.</Body>
-            <FlowStepIndicator step={currentFlowStep} total={totalFlowSteps} label={stageLabel} />
-          </View>
-
-          <View style={styles.reviewRow}>
-            <Text style={styles.reviewCategory}>Objetivo</Text>
-            <Text style={styles.reviewChoice}>{objective}</Text>
-          </View>
-
-          <View style={styles.reviewRow}>
-            <Text style={styles.reviewCategory}>Headline base</Text>
-            <Text style={styles.reviewChoice}>{headline}</Text>
-          </View>
-
-          <View style={styles.reviewRow}>
-            <Text style={styles.reviewCategory}>CTA principal</Text>
-            <Text style={styles.reviewChoice}>{cta}</Text>
-          </View>
-
-          {!auth.profileProductionComplete ? (
-            <Body style={styles.pending}>Para enviar, complete seu cadastro no Raio-X.</Body>
-          ) : null}
-
-          <View style={styles.reviewActionsRow}>
-            <Button label="Voltar" variant="secondary" onPress={() => setStage("copy")} style={styles.action} />
-            <Button label="Salvar rascunho" variant="secondary" onPress={saveDraft} style={styles.action} />
-          </View>
-          <Button label="Enviar para Real" onPress={submit} />
-        </ScrollView>
-      ) : null}
+            <TouchableOpacity onPress={saveDraft} disabled={savingDraft || publishing} style={styles.saveDraftTouch}>
+              <Text style={styles.saveDraftText}>{savingDraft ? "Salvando..." : "Salvar rascunho"}</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
     </Screen>
   );
 }
@@ -614,175 +576,352 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 10,
   },
-  fullscreenWrap: {
-    flex: 1,
-    gap: 8,
+  content: {
+    paddingBottom: 122,
+    gap: 10,
   },
-  topBar: {
+  progressCard: {
+    borderRadius: realTheme.radius.md,
+    borderWidth: 1,
+    borderColor: "rgba(198,255,175,0.2)",
+    backgroundColor: "rgba(9,12,15,0.66)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     gap: 6,
+  },
+  progressTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  progressTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 16,
+  },
+  progressPct: {
+    color: "#9FDD8E",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 13,
+  },
+  progressMeta: {
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 12,
+  },
+  progressTrack: {
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(194,212,194,0.2)",
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "#A3D695",
+  },
+  card: {
     borderRadius: realTheme.radius.md,
     borderWidth: 1,
     borderColor: "rgba(237,237,238,0.1)",
-    backgroundColor: "rgba(10,12,15,0.4)",
-    padding: 10,
-  },
-  subtitle: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 15,
+    backgroundColor: "rgba(10,12,15,0.45)",
+    padding: 12,
+    gap: 10,
   },
   helper: {
     color: realTheme.colors.muted,
-    fontSize: 12,
+    fontSize: 13,
   },
-  choiceCard: {
-    flex: 1,
-    minHeight: 220,
+  fieldWrap: {
+    gap: 5,
   },
-  choiceImage: {
-    flex: 1,
+  label: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 13,
+  },
+  input: {
+    borderRadius: realTheme.radius.sm,
+    borderWidth: 1,
+    borderColor: realTheme.colors.line,
+    backgroundColor: "rgba(17,20,24,0.92)",
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 11,
+  },
+  inputMulti: {
+    minHeight: 90,
+  },
+  templatesList: {
+    gap: 10,
+  },
+  templateCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(237,237,238,0.12)",
+    overflow: "hidden",
+    backgroundColor: "rgba(17,20,24,0.85)",
+  },
+  templateCardActive: {
+    borderColor: "rgba(163,214,149,0.9)",
+    shadowColor: "#9FDD8E",
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  templateHero: {
+    height: 116,
     justifyContent: "flex-end",
   },
-  choiceImageRadius: {
-    borderRadius: realTheme.radius.md,
+  templateHeroImage: {
+    opacity: 0.95,
   },
-  overlay: {
-    paddingHorizontal: 14,
+  templateOverlay: {
+    padding: 10,
+  },
+  templateChip: {
+    alignSelf: "flex-start",
+    borderRadius: realTheme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  templateChipText: {
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 12,
+  },
+  templateHint: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 13,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  sectionsList: {
+    gap: 8,
+  },
+  sectionRow: {
+    borderRadius: realTheme.radius.sm,
+    borderWidth: 1,
+    borderColor: realTheme.colors.line,
+    backgroundColor: "rgba(15,18,24,0.76)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+  sectionRowActive: {
+    borderColor: "rgba(163,214,149,0.8)",
+    backgroundColor: "rgba(53,226,20,0.12)",
+  },
+  sectionTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  sectionLabel: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 14,
+  },
+  sectionHint: {
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 12,
+  },
+  sectionCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(237,237,238,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sectionCheckActive: {
+    borderColor: "rgba(163,214,149,0.95)",
+    backgroundColor: "#A3D695",
+  },
+  info: {
+    color: realTheme.colors.muted,
+    fontSize: 12,
+  },
+  previewWrap: {
+    gap: 12,
+  },
+  builderHeader: {
+    borderRadius: realTheme.radius.md,
+    borderWidth: 1,
+    borderColor: "rgba(198,255,175,0.22)",
+    backgroundColor: "rgba(7,9,12,0.6)",
     paddingVertical: 12,
-    backgroundColor: "rgba(4, 6, 8, 0.62)",
-    borderBottomLeftRadius: realTheme.radius.md,
-    borderBottomRightRadius: realTheme.radius.md,
+    paddingHorizontal: 12,
+    gap: 4,
+  },
+  brand: {
+    color: "#A3D695",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 30,
+    letterSpacing: -0.7,
+  },
+  builderTitle: {
+    color: "#A3D695",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 32,
+    letterSpacing: -0.4,
+  },
+  builderStep: {
+    color: "#D4D9DF",
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 18,
+    marginTop: 4,
+  },
+  builderProgressTrack: {
+    marginTop: 4,
+    height: 6,
+    width: "100%",
+    borderRadius: 999,
+    backgroundColor: "rgba(194,212,194,0.2)",
+    overflow: "hidden",
+  },
+  builderProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#A3D695",
+  },
+  phoneShell: {
+    borderRadius: 34,
+    borderWidth: 1,
+    borderColor: "rgba(245,255,246,0.17)",
+    backgroundColor: "rgba(8,11,14,0.76)",
+    padding: 10,
+    minHeight: 520,
+    shadowColor: "#9DE58A",
+    shadowOpacity: 0.14,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  phoneInner: {
+    flex: 1,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#0B0E12",
+    overflow: "hidden",
+  },
+  previewHero: {
+    height: 250,
+    justifyContent: "flex-end",
+  },
+  previewHeroImage: {
+    opacity: 0.95,
+  },
+  previewHeroOverlay: {
+    padding: 14,
     gap: 2,
   },
-  choiceTag: {
-    color: "rgba(237,237,238,0.88)",
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 11,
-    letterSpacing: 0.8,
+  previewBrand: {
+    color: "#EEE7D8",
+    fontFamily: realTheme.fonts.title,
+    fontSize: 30,
   },
-  choiceTitle: {
-    color: "#FFFFFF",
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 22,
-    lineHeight: 26,
-  },
-  choiceHint: {
-    color: "rgba(237,237,238,0.92)",
-    fontFamily: realTheme.fonts.bodyRegular,
+  previewCaption: {
+    color: "rgba(238,231,216,0.92)",
+    fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 13,
-    lineHeight: 18,
   },
-  generatingWrap: {
-    flex: 1,
-    gap: 10,
+  previewCopyCard: {
+    margin: 12,
+    marginTop: -16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(8,15,11,0.2)",
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    gap: 8,
   },
-  loadingCard: {
-    flex: 1,
+  previewHeadline: {
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 21,
+    lineHeight: 28,
+    letterSpacing: -0.2,
+  },
+  previewSub: {
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  sectionPillsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  sectionPill: {
+    borderRadius: realTheme.radius.pill,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+    backgroundColor: "rgba(10,14,12,0.2)",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  sectionPillText: {
+    color: "#122015",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 12,
+  },
+  previewWhatsButton: {
+    marginTop: 6,
+    borderRadius: realTheme.radius.pill,
+    backgroundColor: "#2E5D3E",
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  previewWhatsText: {
+    color: "#ECF8F0",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 18,
+    letterSpacing: -0.2,
+  },
+  pending: {
+    color: realTheme.colors.green,
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 13,
+  },
+  errorText: {
+    color: "#FF7E7E",
+    fontFamily: realTheme.fonts.bodyMedium,
+    fontSize: 13,
+  },
+  footerActions: {
+    position: "absolute",
+    left: 10,
+    right: 10,
+    bottom: 10,
+    gap: 8,
     borderRadius: realTheme.radius.md,
     borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(15, 18, 24, 0.74)",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 18,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(8,11,14,0.94)",
+    padding: 10,
   },
-  loadingText: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 14,
-  },
-  reviewContent: {
-    paddingBottom: 28,
+  row: {
+    flexDirection: "row",
     gap: 10,
-  },
-  copyCard: {
-    borderRadius: realTheme.radius.sm,
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(15, 18, 24, 0.74)",
-    paddingVertical: 11,
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-  copyHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  copyTitle: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 15,
-  },
-  editButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    borderRadius: realTheme.radius.pill,
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    backgroundColor: "rgba(20,22,28,0.8)",
-  },
-  editText: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 12,
-  },
-  copyText: {
-    color: realTheme.colors.muted,
-    fontFamily: realTheme.fonts.bodyRegular,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  editorInput: {
-    minHeight: 92,
-    borderRadius: realTheme.radius.sm,
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: realTheme.colors.panelSoft,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyRegular,
-    fontSize: 14,
-  },
-  editorActions: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  reviewRow: {
-    borderRadius: realTheme.radius.sm,
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(15, 18, 24, 0.74)",
-    paddingVertical: 11,
-    paddingHorizontal: 12,
-    gap: 3,
-  },
-  reviewCategory: {
-    color: realTheme.colors.muted,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 12,
-  },
-  reviewChoice: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  reviewActionsRow: {
-    flexDirection: "row",
-    gap: 8,
   },
   action: {
     flex: 1,
   },
-  pending: {
-    color: realTheme.colors.green,
+  saveDraftTouch: {
+    alignSelf: "center",
+    paddingVertical: 3,
+    paddingHorizontal: 10,
+  },
+  saveDraftText: {
+    color: realTheme.colors.muted,
     fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 13,
   },

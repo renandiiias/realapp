@@ -3,6 +3,7 @@ export type RouteTarget =
   | "services"
   | "ads"
   | "site"
+  | "video_editor"
   | "content"
   | "orders"
   | "approvals"
@@ -35,6 +36,9 @@ function heuristic(prompt: string): IntentResult {
   if (t.includes("site") || t.includes("landing")) {
     return { target: "site", message: "Te levando para criar site." };
   }
+  if (t.includes("video") || t.includes("vídeo") || t.includes("reel") || t.includes("edição")) {
+    return { target: "video_editor", message: "Te levando para editor de vídeo." };
+  }
   if (t.includes("conteúdo") || t.includes("conteudo") || t.includes("reels") || t.includes("post")) {
     return { target: "content", message: "Conteúdo entra em breve. Te mostro a área." };
   }
@@ -51,7 +55,7 @@ function parseResult(raw: string): IntentResult | null {
   try {
     const parsed = JSON.parse(raw) as Partial<IntentResult>;
     if (!parsed.target || !parsed.message) return null;
-    const allowed: RouteTarget[] = ["home", "services", "ads", "site", "content", "orders", "approvals", "account"];
+    const allowed: RouteTarget[] = ["home", "services", "ads", "site", "video_editor", "content", "orders", "approvals", "account"];
     if (!allowed.includes(parsed.target)) return null;
     return {
       target: parsed.target,
@@ -79,7 +83,7 @@ async function callOpenRouter(prompt: string): Promise<IntentResult | null> {
         {
           role: "system",
           content:
-            "Você é Z.ai da Real. Classifique o pedido para rota do app e responda em JSON puro: {\"target\":\"home|services|ads|site|content|orders|approvals|account\",\"message\":\"frase curta\"}. Mensagem em português com no máximo uma frase.",
+            "Você é Z.ai da Real. Classifique o pedido para rota do app e responda em JSON puro: {\"target\":\"home|services|ads|site|video_editor|content|orders|approvals|account\",\"message\":\"frase curta\"}. Mensagem em português com no máximo uma frase.",
         },
         { role: "user", content: prompt },
       ],
@@ -109,7 +113,7 @@ async function callZai(prompt: string): Promise<IntentResult | null> {
         {
           role: "system",
           content:
-            "Você é Z.ai da Real. Classifique o pedido para rota do app e responda em JSON puro: {\"target\":\"home|services|ads|site|content|orders|approvals|account\",\"message\":\"frase curta\"}. Mensagem em português com no máximo uma frase.",
+            "Você é Z.ai da Real. Classifique o pedido para rota do app e responda em JSON puro: {\"target\":\"home|services|ads|site|video_editor|content|orders|approvals|account\",\"message\":\"frase curta\"}. Mensagem em português com no máximo uma frase.",
         },
         { role: "user", content: prompt },
       ],
@@ -146,6 +150,8 @@ export function targetToPath(target: RouteTarget): string {
       return "/create/ads";
     case "site":
       return "/create/site";
+    case "video_editor":
+      return "/create/video-editor";
     case "content":
       return "/create/content";
     case "orders":

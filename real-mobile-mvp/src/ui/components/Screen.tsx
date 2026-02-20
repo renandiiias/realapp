@@ -16,9 +16,11 @@ import { realTheme } from "../../theme/realTheme";
 export function Screen({
   children,
   style,
+  plain,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
+  plain?: boolean;
 }) {
   const { loggedIn } = useAuth();
 
@@ -26,24 +28,30 @@ export function Screen({
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.safe}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-          <LinearGradient
-            colors={["#080A0D", "#0B0F12", "#0A0D11"]}
-            start={{ x: 0.05, y: 0.05 }}
-            end={{ x: 0.95, y: 1 }}
-            style={styles.gradient}
-          >
-            {loggedIn ? (
-              <>
-                <Image source={require("../../../assets/real-symbol-source.png")} style={styles.symbolTop} resizeMode="contain" />
-                <Image
-                  source={require("../../../assets/real-symbol-source.png")}
-                  style={styles.symbolBottom}
-                  resizeMode="contain"
-                />
-              </>
-            ) : null}
-            <View style={[styles.inner, style]}>{children}</View>
-          </LinearGradient>
+          {plain ? (
+            <View style={styles.plain}>
+              <View style={[styles.inner, style]}>{children}</View>
+            </View>
+          ) : (
+            <LinearGradient
+              colors={["#080A0D", "#0B0F12", "#0A0D11"]}
+              start={{ x: 0.05, y: 0.05 }}
+              end={{ x: 0.95, y: 1 }}
+              style={styles.gradient}
+            >
+              {loggedIn ? (
+                <>
+                  <Image source={require("../../../assets/real-symbol-source.png")} style={styles.symbolTop} resizeMode="contain" />
+                  <Image
+                    source={require("../../../assets/real-symbol-source.png")}
+                    style={styles.symbolBottom}
+                    resizeMode="contain"
+                  />
+                </>
+              ) : null}
+              <View style={[styles.inner, style]}>{children}</View>
+            </LinearGradient>
+          )}
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -57,6 +65,10 @@ const styles = StyleSheet.create({
   },
   gradient: {
     flex: 1,
+  },
+  plain: {
+    flex: 1,
+    backgroundColor: "#0A0D11",
   },
   inner: {
     flex: 1,

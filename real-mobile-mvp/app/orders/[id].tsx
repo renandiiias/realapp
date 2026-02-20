@@ -1,6 +1,9 @@
 import { router, useLocalSearchParams } from "expo-router";
+import { ResizeMode, Video } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import { useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import type { Deliverable, DeliverableType, OrderDetail, OrderStatus } from "../../src/queue/types";
@@ -25,6 +28,54 @@ function prettyLinesFromPayload(payload: Record<string, unknown>): string[] {
     .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "")
     .slice(0, 8)
     .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
+}
+
+function isLikelyVideoUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return /\.(mp4|mov)(?:[?#]|$)/.test(lower) || lower.includes("/media/storage/output/");
+}
+
+function normalizeVideoUrl(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+
+  const publicBase = (process.env.EXPO_PUBLIC_VIDEO_EDITOR_API_BASE_URL || "").replace(/\/+$/, "");
+
+  if (/^https?:\/\//.test(value)) {
+    if (/^https?:\/\/preview\.real\.local(\/|$)/i.test(value) && publicBase) {
+      return value.replace(/^https?:\/\/preview\.real\.local/i, publicBase);
+    }
+    return value;
+  }
+
+  if (value.startsWith("/media/storage/") && publicBase) {
+    return `${publicBase}${value}`;
+  }
+
+  return null;
+}
+
+function extractVideoUrl(deliverable: Deliverable): string | null {
+  const content = deliverable.content;
+  const contentIsVideo =
+    content && typeof content === "object" && !Array.isArray(content) && String((content as { kind?: unknown }).kind || "") === "video";
+
+  if (typeof content === "string") {
+    const normalized = normalizeVideoUrl(content);
+    if (normalized && isLikelyVideoUrl(normalized)) return normalized;
+  }
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const maybe = (content as { outputUrl?: unknown }).outputUrl;
+    if (typeof maybe === "string") {
+      const normalized = normalizeVideoUrl(maybe);
+      if (normalized && (isLikelyVideoUrl(normalized) || contentIsVideo)) return normalized;
+    }
+  }
+  for (const asset of deliverable.assetUrls) {
+    const normalized = normalizeVideoUrl(asset);
+    if (normalized && isLikelyVideoUrl(normalized)) return normalized;
+  }
+  return null;
 }
 
 function deliverableLabel(type: DeliverableType): string {
@@ -55,6 +106,7 @@ function statusHeadline(status: OrderStatus): string {
 function editPath(order: OrderDetail): string {
   if (order.type === "ads") return `/create/ads?orderId=${order.id}`;
   if (order.type === "site") return `/create/site?orderId=${order.id}`;
+  if (order.type === "video_editor") return `/create/video-editor?orderId=${order.id}`;
   return `/create/content?orderId=${order.id}`;
 }
 
@@ -66,7 +118,10 @@ export default function OrderDetailScreen() {
   const detail = orderId ? queue.getOrder(orderId) : null;
 
   const [info, setInfo] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [feedbackByDeliverable, setFeedbackByDeliverable] = useState<Record<string, string>>({});
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
 
   const timeline = useMemo(() => {
     if (!detail) return [];
@@ -122,6 +177,69 @@ export default function OrderDetailScreen() {
       return;
     }
     await queue.submitOrder(detail.id);
+  };
+
+  const assertUrlReachable = async (videoUrl: string) => {
+    const head = await fetch(videoUrl, { method: "HEAD" });
+    if (head.ok) return;
+
+    if (head.status === 405 || head.status === 501) {
+      const probe = await fetch(videoUrl, {
+        method: "GET",
+        headers: { Range: "bytes=0-1" },
+      });
+      if (probe.ok || probe.status === 206) return;
+      throw new Error(`Video indisponivel no servidor (HTTP ${probe.status}).`);
+    }
+
+    throw new Error(`Video indisponivel no servidor (HTTP ${head.status}).`);
+  };
+
+  const openViewer = async (videoUrl: string) => {
+    try {
+      setError(null);
+      await assertUrlReachable(videoUrl);
+      setViewerUrl(videoUrl);
+    } catch (openError) {
+      const message = openError instanceof Error ? openError.message : "Nao foi possivel abrir o video.";
+      setError(message);
+    }
+  };
+
+  const buildFileName = (videoUrl: string) => {
+    const match = videoUrl.match(/\/([^/?#]+\.mp4)(?:[?#]|$)/i);
+    if (match?.[1]) return match[1];
+    return `video_${Date.now()}.mp4`;
+  };
+
+  const downloadInsideApp = async (videoUrl: string) => {
+    try {
+      setError(null);
+      setDownloadingUrl(videoUrl);
+      await assertUrlReachable(videoUrl);
+
+      const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!baseDir) throw new Error("Armazenamento local indisponivel.");
+
+      const targetPath = `${baseDir}${buildFileName(videoUrl)}`;
+      const result = await FileSystem.downloadAsync(videoUrl, targetPath);
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(result.uri, {
+          dialogTitle: "Salvar video",
+          mimeType: "video/mp4",
+          UTI: "public.mpeg-4",
+        });
+      } else {
+        Alert.alert("Download concluido", `Arquivo salvo em: ${result.uri}`);
+      }
+    } catch (downloadError) {
+      const message = downloadError instanceof Error ? downloadError.message : "Nao foi possivel baixar o video.";
+      setError(message);
+    } finally {
+      setDownloadingUrl(null);
+    }
   };
 
   return (
@@ -180,6 +298,7 @@ export default function OrderDetailScreen() {
                 const approval = approvalsById.get(d.id);
                 const isPending = approval?.status === "pending";
                 const isTerminal = approval?.status === "approved" || approval?.status === "changes_requested";
+                const videoUrl = d.type === "url_preview" ? extractVideoUrl(d) : null;
                 return (
                   <View key={d.id} style={styles.deliverable}>
                     <View style={styles.deliverableTop}>
@@ -187,6 +306,23 @@ export default function OrderDetailScreen() {
                       <Text style={styles.deliverableStatus}>{d.status}</Text>
                     </View>
                     <Text style={styles.mono}>{prettyJson(d.content)}</Text>
+                    {videoUrl ? (
+                      <View style={styles.videoActions}>
+                        <Video
+                          source={{ uri: videoUrl }}
+                          style={styles.videoPlayer}
+                          useNativeControls
+                          resizeMode={ResizeMode.COVER}
+                          isLooping={false}
+                        />
+                        <Button label="Ver video no app" variant="secondary" onPress={() => void openViewer(videoUrl)} />
+                        <Button
+                          label={downloadingUrl === videoUrl ? "Baixando..." : "Baixar no app"}
+                          onPress={() => void downloadInsideApp(videoUrl)}
+                          disabled={downloadingUrl === videoUrl}
+                        />
+                      </View>
+                    ) : null}
 
                     {approval ? (
                       <Body style={styles.approvalMeta}>
@@ -249,7 +385,37 @@ export default function OrderDetailScreen() {
             ))}
           </View>
         </Card>
+
+        {error ? (
+          <Card>
+            <Body style={styles.errorText}>{error}</Body>
+          </Card>
+        ) : null}
       </ScrollView>
+
+      <Modal visible={Boolean(viewerUrl)} animationType="slide" transparent={false} onRequestClose={() => setViewerUrl(null)}>
+        <View style={styles.viewerWrap}>
+          {viewerUrl ? (
+            <Video
+              source={{ uri: viewerUrl }}
+              style={styles.viewerPlayer}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              isLooping={false}
+            />
+          ) : null}
+          <View style={styles.viewerActions}>
+            {downloadingUrl === viewerUrl ? <ActivityIndicator color={realTheme.colors.green} /> : null}
+            <Button
+              label={viewerUrl && downloadingUrl === viewerUrl ? "Baixando..." : "Baixar no app"}
+              onPress={() => (viewerUrl ? void downloadInsideApp(viewerUrl) : undefined)}
+              disabled={!viewerUrl || downloadingUrl === viewerUrl}
+              style={styles.viewerBtn}
+            />
+            <Button label="Fechar" variant="secondary" onPress={() => setViewerUrl(null)} style={styles.viewerBtn} />
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -324,6 +490,34 @@ const styles = StyleSheet.create({
   approvalActions: {
     gap: 10,
   },
+  videoActions: {
+    gap: 8,
+  },
+  videoPlayer: {
+    width: "100%",
+    aspectRatio: 9 / 16,
+    borderRadius: 10,
+    backgroundColor: "#000",
+  },
+  viewerWrap: {
+    flex: 1,
+    backgroundColor: "#000",
+    justifyContent: "center",
+  },
+  viewerPlayer: {
+    width: "100%",
+    aspectRatio: 9 / 16,
+    backgroundColor: "#000",
+  },
+  viewerActions: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+    backgroundColor: "rgba(0,0,0,0.78)",
+  },
+  viewerBtn: {
+    width: "100%",
+  },
   changeBlock: {
     gap: 8,
   },
@@ -351,5 +545,8 @@ const styles = StyleSheet.create({
     color: realTheme.colors.muted,
     fontSize: 13,
     lineHeight: 18,
+  },
+  errorText: {
+    color: "#ff7f7f",
   },
 });

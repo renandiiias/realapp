@@ -28,7 +28,15 @@
     },
     "plugins": [
       "expo-font",
-      "expo-router"
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permita acesso para enviar vídeos de até 15 segundos.",
+          "cameraPermission": "Permita acesso à câmera para gravar vídeos de até 15 segundos.",
+          "microphonePermission": "Permita acesso ao microfone para gravar vídeo com áudio."
+        }
+      ]
     ]
   }
 }

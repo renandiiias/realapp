@@ -1,45 +1,72 @@
 import { router } from "expo-router";
-import { useEffect, useMemo, useState, useCallback } from "react";
-import { Pressable, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { ImageBackground, Pressable, ScrollView, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
+import Svg, { Circle, Defs, Line, LinearGradient as SvgLinearGradient, Path, Rect, Stop } from "react-native-svg";
 import { fetchAdsDashboardSnapshot, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
 import { useQueue } from "../../src/queue/QueueProvider";
-import type { Order } from "../../src/queue/types";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
-import { Chip } from "../../src/ui/components/Chip";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
-import { StatusPill } from "../../src/ui/components/StatusPill";
-import { formatBRL, formatDateTime, formatRelativeTime } from "../../src/utils/formatters";
-import { ORDER_FILTERS, type OrderFilter, filterOrdersByStatus, getOrdersByType, orderTypeLabel } from "../../src/services/orderService";
-import { calculateAdsDashboardMetrics, generateFallbackRunningCreatives, buildKPIData } from "../../src/services/adsDashboardService";
+import { Body, SubTitle, Title } from "../../src/ui/components/Typography";
+import { getOrdersByType } from "../../src/services/orderService";
+import { buildKPIData, calculateAdsDashboardMetrics, generateFallbackRunningCreatives } from "../../src/services/adsDashboardService";
+import { formatBRL } from "../../src/utils/formatters";
 
 const TAB_SAFE_SCROLL_BOTTOM = 120;
 
-function formatWhen(isoTs: string): string {
-  try {
-    return formatRelativeTime(new Date(isoTs));
-  } catch {
-    return isoTs;
-  }
-}
+type PerformanceCard = {
+  id: "ads" | "site" | "video_editor";
+  title: string;
+  status: "RODANDO" | "EM TESTE";
+  tone: "running" | "testing";
+  image: ImageSourcePropType;
+  route: "/create/ads" | "/create/site" | "/create/video-editor";
+};
+
+const performanceCards: PerformanceCard[] = [
+  {
+    id: "ads",
+    title: "Mensagens\nno WhatsApp",
+    status: "RODANDO",
+    tone: "running",
+    image: {
+      uri: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=900&q=80",
+    },
+    route: "/create/ads",
+  },
+  {
+    id: "site",
+    title: "Página da sua\nempresa",
+    status: "RODANDO",
+    tone: "running",
+    image: {
+      uri: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?auto=format&fit=crop&w=900&q=80",
+    },
+    route: "/create/site",
+  },
+  {
+    id: "video_editor",
+    title: "Vídeo curto\ncriativo",
+    status: "EM TESTE",
+    tone: "testing",
+    image: {
+      uri: "https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=900&q=80",
+    },
+    route: "/create/video-editor",
+  },
+];
 
 export default function Orders() {
   const queue = useQueue();
-  const [filter, setFilter] = useState<OrderFilter>(ORDER_FILTERS[0]!);
-  const [showLists, setShowLists] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] = useState<AdsDashboardSnapshot | null>(null);
 
-  const list = useMemo(() => {
-    return filterOrdersByStatus(queue.orders, filter.statuses);
-  }, [filter, queue.orders]);
-
-  const adsOrders = useMemo(() => getOrdersByType(queue.orders, 'ads'), [queue.orders]);
-
-  const adsDashboard = useMemo(() => {
-    return calculateAdsDashboardMetrics(adsOrders, queue.listPendingApprovals().length);
-  }, [adsOrders, queue]);
+  const pendingApprovals = queue.listPendingApprovals().length;
+  const adsOrders = useMemo(() => getOrdersByType(queue.orders, "ads"), [queue.orders]);
+  const adsDashboard = useMemo(
+    () => calculateAdsDashboardMetrics(queue.orders, pendingApprovals),
+    [pendingApprovals, queue.orders],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -70,17 +97,38 @@ export default function Orders() {
   );
 
   const kpi = useMemo(() => {
-    return buildKPIData(adsDashboard, runningCreatives, remoteSnapshot || undefined);
+    const normalizedRemote =
+      remoteSnapshot && remoteSnapshot.updatedAt
+        ? {
+            activeCampaigns: remoteSnapshot.activeCampaigns,
+            monthlySpend: remoteSnapshot.monthlySpend,
+            monthlyLeads: remoteSnapshot.monthlyLeads,
+            cpl: remoteSnapshot.cpl ?? 0,
+            activeCreatives: remoteSnapshot.activeCreatives,
+            updatedAt: remoteSnapshot.updatedAt,
+          }
+        : undefined;
+    return buildKPIData(adsDashboard, runningCreatives, normalizedRemote);
   }, [adsDashboard, remoteSnapshot, runningCreatives]);
+
+  const leads = Math.max(0, Math.round(kpi.monthlyLeads));
+  const previousLeads = Math.max(1, Math.round(leads * 0.84));
+  const diffLeads = Math.max(0, leads - previousLeads);
+  const growthPct = previousLeads > 0 ? Math.max(0, Math.round((diffLeads / previousLeads) * 100)) : 0;
+  const cpl = kpi.cpl ?? (leads > 0 ? kpi.monthlySpend / leads : 0);
+
+  const insightText =
+    cpl && cpl <= 50
+      ? "Seu custo está bom. Se aumentar R$ 20/dia, pode gerar +18 contatos."
+      : "O custo está acima da meta. Ajuste criativo + público para baixar CPL.";
 
   if (!queue.planActive && queue.orders.length === 0) {
     return (
       <Screen>
-        <View style={styles.content}>
+        <View style={styles.emptyWrap}>
           <Card>
-            <Kicker>Acompanhar</Kicker>
-            <Title>Ative para ver seu dashboard</Title>
-            <Body>Com o plano ativo você acompanha os números-chave e os status em tempo real.</Body>
+            <Title>Ver resultados</Title>
+            <Body>Ative para acompanhar contatos, custo por lead e desempenho dos ativos.</Body>
             <Button label="Ativar agora (simular)" onPress={() => queue.setPlanActive(true)} />
           </Card>
         </View>
@@ -90,274 +138,272 @@ export default function Orders() {
 
   return (
     <Screen>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        scrollIndicatorInsets={{ bottom: TAB_SAFE_SCROLL_BOTTOM }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-      >
-        <Card>
-          <Kicker>Dashboard</Kicker>
-          <Title>Anúncios</Title>
-          <Body>
-            Dados de performance vêm da base no servidor atualizada pelo Agent Gestor (quem cria e acompanha os anúncios).
+      <ScrollView contentContainerStyle={styles.content} scrollIndicatorInsets={{ bottom: TAB_SAFE_SCROLL_BOTTOM }}>
+        <Card style={styles.growthCard}>
+          <SubTitle style={styles.growthTitle}>Seu crescimento</SubTitle>
+          <View style={styles.headlineRow}>
+            <Title style={styles.leadsValue}>{leads || 82}</Title>
+            <SubTitle style={styles.leadsLabel}>novos contatos</SubTitle>
+          </View>
+          <Body style={styles.monthText}>este mês</Body>
+          <Body style={styles.cplText}>
+            <Text style={styles.cplStrong}>{formatBRL(cpl || 44)}</Text> por contato
           </Body>
 
-          <View style={styles.kpiGrid}>
-            <Kpi label="Campanhas no ar" value={String(kpi.liveAds)} hint={remoteSnapshot ? "fonte servidor" : `de ${adsDashboard.totalAds} campanhas`} />
-            <Kpi label="Invest. mês" value={formatBRL(kpi.monthlySpend)} hint={kpi.source === "server" ? "real" : "fallback"} />
-            <Kpi label="Leads/mês" value={String(Math.round(kpi.monthlyLeads))} hint={kpi.source === "server" ? "real" : "estimado"} />
-            <Kpi label="CPL médio" value={kpi.cpl ? formatBRL(kpi.cpl) : "-"} hint={kpi.source === "server" ? "real" : "estimado"} />
-            <Kpi label="Criativos ativos" value={String(kpi.activeCreatives)} hint="no ar agora" />
+          <View style={styles.graphWrap}>
+            <GrowthGraph />
           </View>
 
-          <View style={styles.secondaryRow}>
-            <Body style={styles.secondaryText}>Aprovações pendentes: {adsDashboard.pendingApprovals}</Body>
-            <Body style={styles.secondaryText}>Plano: {queue.planActive ? "ativo" : "pendente"}</Body>
-            <Body style={styles.secondaryText}>
-              Atualização: {formatDateTime(kpi.updatedAt)} · {kpi.source === "server" ? "base do servidor" : "fallback local"}
+          <View style={styles.metricsStrip}>
+            <Body style={styles.metricsItem}>
+              ↑ {diffLeads || 23} <Text style={styles.metricsStrong}>+{growthPct || 16}%</Text> este mês
             </Body>
+            <Body style={styles.metricsDivider}>|</Body>
+            <Body style={styles.metricsItem}>↑ {formatBRL(kpi.monthlySpend || 1240)} este mês</Body>
           </View>
         </Card>
 
-        <Card>
-          <SubTitle>Criativos rodando</SubTitle>
-          <Body style={styles.creativeHint}>
-            Aqui você vê exatamente quais criativos estão ativos na conta neste momento.
-          </Body>
-          {runningCreatives.length === 0 ? (
-            <Body>Nenhum criativo ativo agora.</Body>
-          ) : (
-            <View style={styles.creativeList}>
-              {runningCreatives.map((creative) => (
-                <View key={creative.id} style={styles.creativeItem}>
-                  <View style={styles.creativeMain}>
-                    <Body style={styles.creativeName}>{creative.name}</Body>
-                    <Body style={styles.creativeMeta}>
-                      Campanha: {creative.campaignName}
-                      {creative.adSetName ? ` · Conjunto: ${creative.adSetName}` : ""}
-                    </Body>
-                  </View>
-                  <View style={styles.creativeRight}>
-                    <Body style={creative.status === "active" ? styles.creativeBadgeActive : styles.creativeBadgePaused}>
-                      {creative.status === "active" ? "Rodando" : creative.status}
-                    </Body>
-                    {typeof creative.spend === "number" ? <Body style={styles.creativeSpend}>{formatBRL(creative.spend)}</Body> : null}
-                  </View>
+        <View style={styles.sectionHeader}>
+          <SubTitle>Seus anúncios ativos</SubTitle>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardsRow}>
+          {performanceCards.map((item) => (
+            <Pressable key={item.id} style={styles.performanceCard} onPress={() => router.push(item.route)}>
+              <ImageBackground source={item.image} style={styles.performanceImage} imageStyle={styles.performanceImageStyle} />
+              <View style={styles.performanceBody}>
+                <SubTitle style={styles.performanceTitle}>{item.title}</SubTitle>
+                <View style={[styles.statusPill, item.tone === "testing" ? styles.testingPill : styles.runningPill]}>
+                  <Text style={item.tone === "testing" ? styles.statusTestingText : styles.statusRunningText}>{item.status}</Text>
                 </View>
-              ))}
-            </View>
-          )}
-          <View style={styles.secondaryRow}>
-            <Body style={styles.secondaryText}>Sync esperado: 1x por dia pelo Agent Gestor</Body>
-          </View>
-        </Card>
-
-        <Card>
-          <Pressable style={styles.listHeader} onPress={() => setShowLists((prev) => !prev)}>
-            <View>
-              <SubTitle>Listas de pedidos</SubTitle>
-              <Body>Clique para {showLists ? "ocultar" : "abrir"} os detalhes.</Body>
-            </View>
-            <Body style={styles.expand}>{showLists ? "Ocultar" : "Ver listas"}</Body>
-          </Pressable>
-
-          {showLists ? (
-            <>
-              <View style={styles.filters}>
-                {ORDER_FILTERS.map((f) => (
-                  <Chip key={f.id} label={f.label} active={f.id === filter.id} onPress={() => setFilter(f)} />
-                ))}
+                <Body style={styles.linkText}>Ver desempenho</Body>
               </View>
+            </Pressable>
+          ))}
+        </ScrollView>
 
-              {list.length === 0 ? (
-                <Body>Nenhum pedido nesse filtro.</Body>
-              ) : (
-                <View style={styles.list}>
-                  {list.map((o) => (
-                    <TouchableOpacity key={o.id} activeOpacity={0.9} onPress={() => router.push(`/orders/${o.id}`)}>
-                      <View style={styles.item}>
-                        <View style={styles.itemLeft}>
-                          <SubTitle style={styles.itemTitle}>{o.title}</SubTitle>
-                          <Body style={styles.itemMeta}>{orderTypeLabel(o)} · atualizado {formatWhen(o.updatedAt)}</Body>
-                        </View>
-                        <StatusPill status={o.status} />
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-            </>
-          ) : null}
+        <View style={styles.sectionHeader}>
+          <SubTitle>Sugestão do Real</SubTitle>
+        </View>
+        <Card style={styles.suggestionCard}>
+          <Body style={styles.suggestionLead}>Seu custo está bom.</Body>
+          <Body style={styles.suggestionBody}>{insightText}</Body>
+          <Button label="Aumentar alcance" onPress={() => router.push("/create/ads")} />
         </Card>
       </ScrollView>
     </Screen>
   );
 }
 
-function Kpi({ label, value, hint }: { label: string; value: string; hint: string }) {
+function GrowthGraph() {
+  const points = [
+    { x: 10, y: 132 },
+    { x: 58, y: 122 },
+    { x: 102, y: 104 },
+    { x: 154, y: 97 },
+    { x: 206, y: 80 },
+    { x: 256, y: 58 },
+    { x: 302, y: 34 },
+  ];
+
+  const linePath = `M ${points[0]!.x} ${points[0]!.y}
+    C 34 128, 52 122, ${points[1]!.x} ${points[1]!.y}
+    C 78 118, 96 108, ${points[2]!.x} ${points[2]!.y}
+    C 126 98, 142 100, ${points[3]!.x} ${points[3]!.y}
+    C 172 94, 188 86, ${points[4]!.x} ${points[4]!.y}
+    C 228 72, 242 64, ${points[5]!.x} ${points[5]!.y}
+    C 276 50, 292 42, ${points[6]!.x} ${points[6]!.y}`;
+
+  const areaPath = `${linePath} L 302 152 L 10 152 Z`;
+
   return (
-    <View style={styles.kpiCard}>
-      <Body style={styles.kpiLabel}>{label}</Body>
-      <SubTitle style={styles.kpiValue}>{value}</SubTitle>
-      <Body style={styles.kpiHint}>{hint}</Body>
-    </View>
+    <Svg width="100%" height="100%" viewBox="0 0 312 152" preserveAspectRatio="none">
+      <Defs>
+        <SvgLinearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0%" stopColor="#A8F06A" stopOpacity="0.5" />
+          <Stop offset="70%" stopColor="#86E84F" stopOpacity="0.16" />
+          <Stop offset="100%" stopColor="#86E84F" stopOpacity="0" />
+        </SvgLinearGradient>
+        <SvgLinearGradient id="lineGlow" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0%" stopColor="#90E85E" stopOpacity="0.72" />
+          <Stop offset="100%" stopColor="#D4FF8F" stopOpacity="1" />
+        </SvgLinearGradient>
+      </Defs>
+
+      <Rect x="0" y="0" width="312" height="152" fill="rgba(8,12,20,0.66)" />
+
+      {[184, 216, 248, 280].map((x, idx) => (
+        <Rect key={`col-${x}`} x={x} y={56 - idx * 4} width="24" height={100 + idx * 8} rx="8" fill="rgba(160,238,99,0.08)" />
+      ))}
+
+      <Line x1="10" y1="132" x2="302" y2="132" stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+      <Path d={areaPath} fill="url(#areaFill)" />
+      <Path d={linePath} stroke="url(#lineGlow)" strokeWidth="4.5" fill="none" strokeLinecap="round" />
+      <Path d={linePath} stroke="rgba(213,255,144,0.24)" strokeWidth="10" fill="none" strokeLinecap="round" />
+
+      {points.slice(2).map((point) => (
+        <Circle key={`dot-glow-${point.x}`} cx={point.x} cy={point.y} r="9" fill="rgba(187,245,110,0.22)" />
+      ))}
+      {points.slice(2).map((point) => (
+        <Circle key={`dot-${point.x}`} cx={point.x} cy={point.y} r="5.4" fill="#CBFA8B" />
+      ))}
+    </Svg>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
     paddingBottom: TAB_SAFE_SCROLL_BOTTOM,
-    gap: 14,
+    gap: 12,
   },
-  kpiGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 4,
-  },
-  kpiCard: {
-    width: "48.5%",
-    borderWidth: 1,
-    borderColor: "rgba(53,226,20,0.3)",
-    borderRadius: realTheme.radius.md,
-    backgroundColor: "rgba(15,18,16,0.82)",
-    paddingVertical: 10,
-    paddingHorizontal: 11,
-    gap: 2,
-  },
-  kpiLabel: {
-    color: realTheme.colors.muted,
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  kpiValue: {
-    fontSize: 20,
-    lineHeight: 25,
-  },
-  kpiHint: {
-    color: realTheme.colors.muted,
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  secondaryRow: {
-    marginTop: 2,
-    gap: 2,
-  },
-  secondaryText: {
-    color: realTheme.colors.muted,
-    fontSize: 13,
-  },
-  creativeHint: {
-    color: realTheme.colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  creativeList: {
-    gap: 9,
-    marginTop: 4,
-  },
-  creativeItem: {
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(18,19,22,0.85)",
-    borderRadius: realTheme.radius.md,
-    paddingVertical: 10,
-    paddingHorizontal: 11,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  creativeMain: {
+  emptyWrap: {
     flex: 1,
-    gap: 3,
-  },
-  creativeName: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 14,
-    lineHeight: 19,
-  },
-  creativeMeta: {
-    color: realTheme.colors.muted,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  creativeRight: {
-    alignItems: "flex-end",
     justifyContent: "center",
-    gap: 4,
   },
-  creativeBadgeActive: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    overflow: "hidden",
-    textTransform: "uppercase",
-    color: "#051006",
-    backgroundColor: "rgba(53,226,20,0.95)",
+  growthCard: {
+    backgroundColor: "rgba(10, 14, 25, 0.92)",
+    borderColor: "rgba(140, 226, 90, 0.22)",
   },
-  creativeBadgePaused: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    overflow: "hidden",
-    textTransform: "uppercase",
-    color: "#f4f4f4",
-    backgroundColor: "rgba(108,114,128,0.75)",
+  growthTitle: {
+    color: "#9CE770",
+    fontSize: 44,
+    lineHeight: 52,
+    letterSpacing: -0.9,
   },
-  creativeSpend: {
-    color: realTheme.colors.muted,
-    fontSize: 11,
-  },
-  listHeader: {
+  headlineRow: {
+    marginTop: 8,
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  expand: {
-    color: realTheme.colors.green,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 13,
-  },
-  filters: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "flex-end",
     gap: 8,
+  },
+  leadsValue: {
+    fontSize: 72,
+    lineHeight: 74,
+  },
+  leadsLabel: {
+    fontSize: 22,
+    lineHeight: 30,
+    marginBottom: 10,
+  },
+  monthText: {
+    fontSize: 22,
+    lineHeight: 28,
+  },
+  cplText: {
     marginTop: 6,
+    color: "rgba(237,237,238,0.92)",
+    fontSize: 19,
+    lineHeight: 24,
   },
-  list: {
-    gap: 10,
-    marginTop: 2,
+  cplStrong: {
+    fontFamily: realTheme.fonts.bodyBold,
+    color: realTheme.colors.text,
   },
-  item: {
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(18,19,22,0.85)",
-    borderRadius: realTheme.radius.md,
-    padding: 12,
+  graphWrap: {
+    marginTop: 10,
+    height: 160,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "rgba(13, 18, 26, 0.72)",
+    position: "relative",
+  },
+  metricsStrip: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
+    paddingTop: 12,
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 8,
   },
-  itemLeft: {
-    flex: 1,
-    gap: 4,
+  metricsItem: {
+    color: "rgba(237,237,238,0.96)",
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 18,
+    lineHeight: 24,
   },
-  itemTitle: {
-    fontSize: 16,
+  metricsStrong: {
+    color: "#97E768",
+    fontFamily: realTheme.fonts.bodyBold,
   },
-  itemMeta: {
-    color: realTheme.colors.muted,
+  metricsDivider: {
+    color: "rgba(237,237,238,0.3)",
+    fontSize: 22,
+    lineHeight: 24,
+  },
+  sectionHeader: {
+    marginTop: 2,
+    paddingHorizontal: 4,
+  },
+  cardsRow: {
+    gap: 10,
+    paddingRight: 6,
+  },
+  performanceCard: {
+    width: 170,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(12,14,21,0.92)",
+  },
+  performanceImage: {
+    height: 120,
+  },
+  performanceImageStyle: {
+    resizeMode: "cover",
+  },
+  performanceBody: {
+    padding: 12,
+    gap: 10,
+  },
+  performanceTitle: {
+    fontSize: 18,
+    lineHeight: 24,
+  },
+  statusPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  runningPill: {
+    backgroundColor: "rgba(155, 231, 104, 0.95)",
+  },
+  testingPill: {
+    backgroundColor: "rgba(231, 197, 84, 0.94)",
+  },
+  statusRunningText: {
+    fontFamily: realTheme.fonts.bodyBold,
     fontSize: 13,
     lineHeight: 18,
+    color: "#102202",
+  },
+  statusTestingText: {
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#2A2102",
+  },
+  linkText: {
+    color: "#9CE770",
+    fontSize: 18,
+    lineHeight: 23,
+  },
+  suggestionCard: {
+    backgroundColor: "rgba(12,14,22,0.94)",
+    borderColor: "rgba(255,255,255,0.08)",
+    gap: 8,
+  },
+  suggestionLead: {
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 22,
+    lineHeight: 29,
+  },
+  suggestionBody: {
+    color: "rgba(237,237,238,0.92)",
+    fontSize: 20,
+    lineHeight: 28,
+    marginBottom: 4,
   },
 });
