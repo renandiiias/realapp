@@ -12,15 +12,15 @@ import { useEffect, useRef, useState } from "react";
 import { routeWithIntent, targetToPath } from "../../src/ai/intentRouter";
 
 const promptExamples = [
-  "Quero um site para clínica com leads no WhatsApp",
+  "Preciso vender mais pelo WhatsApp",
   "Criar campanha para encher agenda esta semana",
-  "Montar landing page para lançar meu curso",
+  "Quero uma landing page pronta para vender",
   "Preciso de criativos e plano de anúncios no Meta",
 ];
 const promptSuggestions = [
-  "Quero um site para clínica com WhatsApp",
-  "Preciso de anúncios para vender mais este mês",
-  "Criar landing page para lançamento de produto",
+  "Preciso vender mais no WhatsApp",
+  "Quero anúncios para vender mais este mês",
+  "Quero uma landing page pronta para vender",
 ];
 const quickServices: Array<{ id: "site" | "ads" | "video"; label: string; prompt: string }> = [
   { id: "site", label: "Criar site", prompt: "Quero criar um site" },
