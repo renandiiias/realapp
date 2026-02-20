@@ -1,46 +1,76 @@
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
-import { PROFILE_FIELD_LABELS } from "../../src/auth/profileReadiness";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
-import { Button } from "../../src/ui/components/Button";
-import { Card } from "../../src/ui/components/Card";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
 
-type StatusKey = "minimum" | "production" | "tour";
 const TAB_SAFE_SCROLL_BOTTOM = 120;
+
+type CheckItem = {
+  id: "company" | "strategy" | "investment";
+  title: string;
+  subtitle?: string;
+  done: boolean;
+  route: "/account/profile" | "/account/marketing" | "/account/investment";
+};
 
 export default function Account() {
   const auth = useAuth();
   const queue = useQueue();
-  const [selectedStatus, setSelectedStatus] = useState<StatusKey | null>(null);
 
-  const missingForProduction = auth.missingForProduction.map((field) => PROFILE_FIELD_LABELS[field]).slice(0, 6);
-  const missingForMinimum = auth.missingForMinimum.map((field) => PROFILE_FIELD_LABELS[field]).slice(0, 6);
-
-  const statusConfig: Record<StatusKey, { label: string; ok: boolean; missing: string[] }> = useMemo(
-    () => ({
-      minimum: {
-        label: "Cadastro mínimo",
-        ok: auth.profileMinimumComplete,
-        missing: missingForMinimum,
-      },
-      production: {
-        label: "Cadastro de produção",
-        ok: auth.profileProductionComplete,
-        missing: missingForProduction,
-      },
-      tour: {
-        label: "Tour guiado",
-        ok: auth.appTourCompleted,
-        missing: auth.appTourCompleted ? [] : ["Concluir o tour guiado do app"],
-      },
-    }),
-    [auth.appTourCompleted, auth.profileMinimumComplete, auth.profileProductionComplete, missingForMinimum, missingForProduction],
+  const hasCompany = Boolean(
+    auth.companyProfile?.companyName?.trim() &&
+      auth.companyProfile?.whatsappBusiness?.trim() &&
+      auth.companyProfile?.targetAudience?.trim() &&
+      auth.companyProfile?.city?.trim(),
   );
+
+  const hasStrategy = Boolean(
+    auth.rayX?.marketSegment?.trim() && auth.rayX?.monthlyBudget && auth.companyProfile?.offerSummary?.trim(),
+  );
+
+  const hasInvestment = Boolean(
+    (typeof auth.companyProfile?.adMonthlyInvestment === "number" && auth.companyProfile.adMonthlyInvestment > 0) ||
+      (typeof auth.companyProfile?.adPrepaidBalance === "number" && auth.companyProfile.adPrepaidBalance > 0),
+  );
+
+  const checks: CheckItem[] = [
+    {
+      id: "company",
+      title: "Dados da empresa",
+      subtitle: "Dados da empresa e contato",
+      done: hasCompany,
+      route: "/account/profile",
+    },
+    {
+      id: "strategy",
+      title: "Estratégia definida",
+      subtitle: "Segmento e orçamento",
+      done: hasStrategy,
+      route: "/account/marketing",
+    },
+    {
+      id: "investment",
+      title: "Investimento de anúncios",
+      done: hasInvestment,
+      route: "/account/investment",
+    },
+  ];
+
+  const nextPending = checks.find((item) => !item.done);
+  const systemReady = checks.every((item) => item.done) && auth.profileProductionComplete;
+
+  const systemTitle = systemReady ? "Pronto para rodar anúncios" : "Ainda falta configurar";
+
+  const resolveNow = () => {
+    if (nextPending) {
+      router.push(nextPending.route);
+      return;
+    }
+    router.push("/account/investment");
+  };
 
   return (
     <Screen>
@@ -50,96 +80,71 @@ export default function Account() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        <Card>
-          <Kicker>Conta</Kicker>
-          <Title>Central de gestão</Title>
-          <Body>Edite cada área no lugar certo para não ficar tudo misturado.</Body>
-        </Card>
+        <Text style={styles.pageTitle}>Conta</Text>
 
-        <Card>
-          <SubTitle>Checklist</SubTitle>
-          <View style={styles.statusList}>
-            {(["minimum", "production", "tour"] as StatusKey[]).map((key) => (
-              <Pressable key={key} onPress={() => setSelectedStatus(key)} style={styles.statusItem}>
-                <View style={[styles.statusDot, statusConfig[key].ok ? styles.statusDotOk : styles.statusDotPending]} />
-                <Body style={styles.statusLabel}>{statusConfig[key].label}</Body>
-              </Pressable>
-            ))}
+        <View style={styles.statusWrap}>
+          <Text style={styles.statusLabel}>Status do sistema</Text>
+          <Text style={[styles.statusValue, systemReady ? styles.statusReady : styles.statusPending]}>{systemTitle}</Text>
+
+          <TouchableOpacity style={styles.resolveButton} activeOpacity={0.9} onPress={resolveNow}>
+            <Text style={styles.resolveText}>Resolver agora</Text>
+            <Ionicons name="chevron-forward" size={26} color="#0A1207" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.checklistWrap}>
+          {checks.map((item) => (
+            <TouchableOpacity key={item.id} style={styles.checkRow} activeOpacity={0.88} onPress={() => router.push(item.route)}>
+              <View style={styles.checkIconWrap}>
+                {item.done ? (
+                  <Ionicons name="checkmark" size={22} color={realTheme.colors.green} />
+                ) : (
+                  <View style={styles.emptyCircle} />
+                )}
+              </View>
+
+              <View style={styles.checkTextWrap}>
+                <Text style={styles.checkTitle}>{item.title}</Text>
+                {item.subtitle ? <Text style={styles.checkSubtitle}>{item.subtitle}</Text> : null}
+              </View>
+
+              <Ionicons name="chevron-forward" size={19} color="rgba(220,225,233,0.45)" />
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.sectionTitle}>Plano</Text>
+
+        <View style={styles.planCard}>
+          <View style={styles.planTop}>
+            <View style={styles.planTextWrap}>
+              <Text style={styles.planName}>Plano Pro</Text>
+              <Text style={styles.planMuted}>Renova em 24/04</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={24} color="rgba(220,225,233,0.45)" />
           </View>
 
-          {selectedStatus ? (
-            <Body style={styles.statusHint}>
-              {statusConfig[selectedStatus].ok
-                ? "Tudo certo aqui."
-                : `Falta: ${statusConfig[selectedStatus].missing.join(" · ")}`}
-            </Body>
-          ) : null}
-
-          {!auth.appTourCompleted ? (
-            <Button label="Fazer tour agora" variant="secondary" onPress={() => router.push("/onboarding/app-tour")} />
-          ) : null}
-        </Card>
-
-        <Card>
-          <SubTitle>Editar dados</SubTitle>
-          <ManageRow
-            title="Cadastro da empresa"
-            hint="Dados da empresa, contato e links"
-            onPress={() => router.push("/account/profile")}
-          />
-          <ManageRow
-            title="Preferências de marketing"
-            hint="Objetivo, budget, segmento e estratégia"
-            onPress={() => router.push("/account/marketing")}
-          />
-          <ManageRow
-            title="Investimento de anúncios"
-            hint="Orçamento mensal e saldo pré-pago"
-            onPress={() => router.push("/account/investment")}
-          />
-        </Card>
-
-        <Card>
-          <Kicker>Plano</Kicker>
-          <Title>Assinatura</Title>
-          <View style={styles.planRow}>
-            <SubTitle>Status</SubTitle>
-            <Body style={styles.value}>{queue.planActive ? "Ativo" : "Não ativo"}</Body>
+          <View style={styles.planBottom}>
+            <Text style={styles.planMuted}>3 de 5 campanhas ativas</Text>
+            <TouchableOpacity activeOpacity={0.85} onPress={() => queue.setPlanActive(true)}>
+              <Text style={styles.planAction}>Gerenciar plano</Text>
+            </TouchableOpacity>
           </View>
-          <Button
-            label={queue.planActive ? "Plano ativo" : "Já paguei (simular)"}
-            onPress={() => queue.setPlanActive(true)}
-            disabled={queue.planActive}
-          />
-          <Button label="Fazer upgrade do plano" variant="secondary" onPress={() => {}} />
-        </Card>
+        </View>
 
-        <Card>
-          <SubTitle>Sessão</SubTitle>
-          <Body style={styles.muted}>{auth.userEmail ? auth.userEmail : "Sem sessão ativa"}</Body>
-          <Button
-            label="Sair"
-            variant="secondary"
-            onPress={async () => {
-              await auth.logout();
-              router.replace("/welcome");
-            }}
-          />
-        </Card>
+        <Text style={styles.userEmail}>{auth.userEmail || "usuario@email.com"}</Text>
+
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={async () => {
+            await auth.logout();
+            router.replace("/welcome");
+          }}
+        >
+          <Text style={styles.logout}>Sair</Text>
+        </TouchableOpacity>
       </ScrollView>
     </Screen>
-  );
-}
-
-function ManageRow({ title, hint, onPress }: { title: string; hint: string; onPress(): void }) {
-  return (
-    <TouchableOpacity style={styles.manageRow} activeOpacity={0.9} onPress={onPress}>
-      <View style={styles.manageTextWrap}>
-        <SubTitle style={styles.manageTitle}>{title}</SubTitle>
-        <Body style={styles.manageHint}>{hint}</Body>
-      </View>
-      <Body style={styles.manageCta}>Abrir</Body>
-    </TouchableOpacity>
   );
 }
 
@@ -148,82 +153,148 @@ const styles = StyleSheet.create({
     paddingBottom: TAB_SAFE_SCROLL_BOTTOM,
     gap: 14,
   },
-  muted: {
-    color: realTheme.colors.muted,
+  pageTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 26,
+    lineHeight: 32,
+    letterSpacing: -0.3,
+    marginTop: 2,
   },
-  statusList: {
-    gap: 10,
-  },
-  statusItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    borderRadius: 999,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(18,19,22,0.7)",
-  },
-  statusDot: {
-    width: 11,
-    height: 11,
-    borderRadius: 999,
-  },
-  statusDotOk: {
-    backgroundColor: realTheme.colors.green,
-  },
-  statusDotPending: {
-    backgroundColor: "#ff8e53",
+  statusWrap: {
+    gap: 8,
+    paddingTop: 2,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(205, 217, 238, 0.16)",
   },
   statusLabel: {
-    color: realTheme.colors.text,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 14,
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 17,
   },
-  statusHint: {
+  statusValue: {
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 17,
+    lineHeight: 24,
+  },
+  statusReady: {
     color: realTheme.colors.green,
-    fontFamily: realTheme.fonts.bodyMedium,
-    fontSize: 13,
-    lineHeight: 18,
   },
-  manageRow: {
+  statusPending: {
+    color: "#E8B35A",
+  },
+  resolveButton: {
+    marginTop: 8,
+    height: 58,
+    borderRadius: 46,
+    backgroundColor: realTheme.colors.green,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  resolveText: {
+    color: "#0A1207",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 17,
+    letterSpacing: -0.2,
+  },
+  checklistWrap: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(205, 217, 238, 0.16)",
+  },
+  checkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 76,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(205, 217, 238, 0.16)",
+    paddingVertical: 8,
+  },
+  checkIconWrap: {
+    width: 28,
+    alignItems: "center",
+  },
+  emptyCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 99,
+    borderWidth: 2,
+    borderColor: "rgba(220,225,233,0.35)",
+  },
+  checkTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  checkTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  checkSubtitle: {
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  sectionTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 18,
+    marginTop: 8,
+  },
+  planCard: {
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: realTheme.colors.line,
-    backgroundColor: "rgba(18,19,22,0.85)",
-    borderRadius: realTheme.radius.md,
-    paddingVertical: 11,
-    paddingHorizontal: 12,
+    borderColor: "rgba(205, 217, 238, 0.2)",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 12,
+    backgroundColor: "rgba(9,12,18,0.4)",
+  },
+  planTop: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
   },
-  manageTextWrap: {
-    flex: 1,
+  planTextWrap: {
     gap: 2,
   },
-  manageTitle: {
-    fontSize: 16,
+  planName: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 23,
   },
-  manageHint: {
+  planMuted: {
     color: realTheme.colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 15,
   },
-  manageCta: {
-    color: realTheme.colors.green,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    fontSize: 13,
-  },
-  planRow: {
+  planBottom: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
   },
-  value: {
+  planAction: {
     color: realTheme.colors.text,
     fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 16,
+  },
+  userEmail: {
+    marginTop: 8,
+    color: realTheme.colors.muted,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 16,
+  },
+  logout: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 18,
+    marginBottom: 6,
   },
 });
