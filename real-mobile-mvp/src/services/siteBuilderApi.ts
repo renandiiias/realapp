@@ -59,7 +59,6 @@ export type LiveSiteGenerateRequest = {
   previous?: {
     slug?: string | null;
     code?: SiteCodeBundle | null;
-    builderSpec?: SiteBuilderSpec | null;
   };
 };
 
@@ -67,18 +66,21 @@ export type LiveSiteGenerateResponse = {
   slug: string;
   previewUrl: string;
   publicUrl: string | null;
-  builderSpec: SiteBuilderSpec;
+  builderSpec?: SiteBuilderSpec | null;
   code?: SiteCodeBundle | null;
   meta?: {
     engine?: string;
     aiEnabled?: boolean;
     generatedAt?: string;
+    retryCount?: number;
+    deprecated?: string;
   };
 };
 
 export type LiveSitePublishRequest = {
   slug: string;
-  builderSpec: SiteBuilderSpec;
+  code?: SiteCodeBundle;
+  builderSpec?: SiteBuilderSpec;
 };
 
 export type LiveSitePublishResponse = {
@@ -103,6 +105,7 @@ async function extractError(response: Response): Promise<string> {
       await AsyncStorage.removeItem(AUTH_TOKEN_KEY);
       return "Sessão expirada. Faça login novamente.";
     }
+    if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
     if (typeof payload?.error === "string" && payload.error.trim()) return payload.error.trim();
   } catch {
     // no-op

@@ -16,9 +16,11 @@ const ZAI_BASE_URL = String(process.env.ZAI_BASE_URL || process.env.EXPO_PUBLIC_
 const ZAI_API_KEY = String(process.env.ZAI_API_KEY || process.env.EXPO_PUBLIC_ZAI_API_KEY || "").trim();
 const ZAI_MODEL = String(process.env.ZAI_MODEL || process.env.EXPO_PUBLIC_ZAI_MODEL || "glm-4.5-air").trim();
 const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 30000);
+const SITE_BUILDER_V3_RAW = String(process.env.SITE_BUILDER_V3_RAW || "true").trim().toLowerCase() !== "false";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+const codeGenerationFailureCounter = new Map();
 
 const builderBlockSchema = z.object({
   id: z.string().min(2).max(80),
@@ -86,6 +88,13 @@ const publishSchema = z.object({
   builderSpec: builderSpecSchema,
 });
 
+const publishCodeSchema = z.object({
+  orderId: z.string().min(6).max(120),
+  customerId: z.string().max(120).optional(),
+  slug: z.string().max(120).optional(),
+  code: codeBundleSchema,
+});
+
 function hasBoltVendor() {
   return existsSync(BOLT_VENDOR_PATH);
 }
@@ -114,6 +123,11 @@ function summarizePrompt(prompt, max = 160) {
   const text = String(prompt || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   return text.slice(0, max);
+}
+
+function promptFailureKey(prompt) {
+  const base = summarizePrompt(prompt, 80).toLowerCase();
+  return base || "empty_prompt";
 }
 
 function escapeHtml(value) {
@@ -456,46 +470,167 @@ ${js ? `<script>${js}</script>` : ""}
 </html>`;
 }
 
+function inferPromptProfile(prompt) {
+  const raw = String(prompt || "").trim();
+  const lower = raw.toLowerCase();
+  const isClinic = /(clinica|clínica|dentista|odont|est[eé]tica|fisioterapia|sa[uú]de)/i.test(lower);
+  const isRestaurant = /(restaurante|pizzaria|hamburg|caf[eé]|bar|delivery)/i.test(lower);
+  const wantsBlue = /\bazul\b/i.test(lower);
+  const wantsPink = /\brosa\b/i.test(lower);
+
+  if (isClinic) {
+    return {
+      business: "Clínica",
+      heroTitle: "Cuidado humano com excelência clínica",
+      heroSubtitle: "Atendimento acolhedor, tecnologia moderna e acompanhamento completo para seus pacientes.",
+      cta: "Agendar Consulta",
+      palette: { bg: "#f4f8ff", panel: "#ffffff", primary: "#2b6fff", accent: "#1f4fd6", text: "#0f1b34", muted: "#486080" },
+      sections: [
+        { title: "Especialidades", body: "Clínica geral, prevenção, estética e acompanhamento contínuo com equipe experiente." },
+        { title: "Estrutura", body: "Ambiente moderno, equipamentos atualizados e protocolos de segurança em todas as etapas." },
+        { title: "Depoimentos", body: "Pacientes destacam clareza no atendimento, pontualidade e resultados consistentes." },
+        { title: "Como funciona", body: "1) Triagem inicial  2) Plano personalizado  3) Retorno com orientação prática." },
+      ],
+    };
+  }
+
+  if (isRestaurant) {
+    return {
+      business: "Restaurante",
+      heroTitle: "Sabores marcantes com entrega rápida",
+      heroSubtitle: "Cardápio completo, ingredientes frescos e experiência deliciosa do pedido ao último prato.",
+      cta: "Ver Cardápio",
+      palette: { bg: "#fff8f2", panel: "#ffffff", primary: "#ff7a18", accent: "#df5c00", text: "#2f1808", muted: "#6b4a34" },
+      sections: [
+        { title: "Pratos destaque", body: "Combos da casa, pratos executivos e opções premium para almoço e jantar." },
+        { title: "Entrega", body: "Pedido simples, rastreio em tempo real e embalagem pensada para chegar impecável." },
+        { title: "Avaliações", body: "Clientes elogiam sabor, porções generosas e atendimento rápido no WhatsApp." },
+        { title: "Reservas", body: "Agende mesas e eventos em poucos cliques com confirmação imediata." },
+      ],
+    };
+  }
+
+  const neutralPrimary = wantsPink ? "#ff4fa3" : wantsBlue ? "#2b6fff" : "#24c268";
+  const neutralAccent = wantsPink ? "#e2358e" : wantsBlue ? "#1f4fd6" : "#179852";
+  return {
+    business: "Sua empresa",
+    heroTitle: "Landing page premium para converter mais",
+    heroSubtitle: "Design moderno, conteúdo objetivo e chamadas claras para transformar visitas em contatos.",
+    cta: "Falar no WhatsApp",
+    palette: { bg: "#0b1016", panel: "#111a24", primary: neutralPrimary, accent: neutralAccent, text: "#f1f5ff", muted: "#b9c5d9" },
+    sections: [
+      { title: "Oferta principal", body: "Proposta de valor clara, com foco no resultado que o cliente realmente busca." },
+      { title: "Benefícios", body: "Processo simples, execução rápida e qualidade consistente do início ao fim." },
+      { title: "Prova social", body: "Depoimentos e casos que reforçam confiança e reduzem fricção na decisão." },
+      { title: "Próximo passo", body: "CTA direto para contato e diagnóstico rápido para iniciar hoje mesmo." },
+    ],
+  };
+}
+
 function fallbackCodeBundle(prompt) {
   const text = summarizePrompt(prompt, 180) || "Site sob medida";
+  const profile = inferPromptProfile(prompt);
+  const sectionsHtml = profile.sections
+    .map((section) => `<article class="card"><h3>${escapeHtml(section.title)}</h3><p>${escapeHtml(section.body)}</p></article>`)
+    .join("\n");
+
   return {
     html: `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(text)}</title>
+  <title>${escapeHtml(profile.business)} • ${escapeHtml(text)}</title>
   <style>
     body {
-      background: #0066cc;
-      color: #ffffff;
-      font-family: Arial, sans-serif;
+      background: ${profile.palette.bg};
+      color: ${profile.palette.text};
+      font-family: Inter, Arial, sans-serif;
       margin: 0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      text-align: center;
+      line-height: 1.45;
     }
-    h1 { font-size: clamp(2rem, 6vw, 3rem); margin: 0 0 12px; }
-    p { font-size: 1.1rem; opacity: .92; margin: 0 0 18px; }
-    button {
-      background: #003366;
-      color: #fff;
-      border: 2px solid #fff;
-      border-radius: 10px;
-      padding: 10px 18px;
+    .shell {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 20px 14px 54px;
+    }
+    .hero {
+      padding: 26px;
+      border-radius: 20px;
+      background: linear-gradient(140deg, ${profile.palette.panel}, ${profile.palette.bg});
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 16px 44px rgba(0,0,0,0.18);
+    }
+    .eyebrow {
+      display: inline-block;
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: ${profile.palette.muted};
+      margin-bottom: 10px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 5vw, 3rem);
+      line-height: 1.1;
+    }
+    .lead {
+      margin: 0 0 16px;
+      color: ${profile.palette.muted};
+      font-size: 1.05rem;
+      max-width: 70ch;
+    }
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 20px;
       font-weight: 700;
+      background: ${profile.palette.primary};
+      color: #fff;
+      text-decoration: none;
       cursor: pointer;
+    }
+    .grid {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit,minmax(220px,1fr));
+      gap: 12px;
+    }
+    .card {
+      border-radius: 16px;
+      padding: 16px;
+      background: ${profile.palette.panel};
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 1.06rem;
+    }
+    .card p {
+      margin: 0;
+      color: ${profile.palette.muted};
+    }
+    .footer {
+      margin-top: 16px;
+      color: ${profile.palette.muted};
+      font-size: .9rem;
+      text-align: center;
     }
   </style>
 </head>
 <body>
-  <h1>Site criado por IA</h1>
-  <p>${escapeHtml(text)}</p>
-  <button>Fale com a gente</button>
+  <main class="shell">
+    <section class="hero">
+      <span class="eyebrow">${escapeHtml(profile.business)} • preview</span>
+      <h1>${escapeHtml(profile.heroTitle)}</h1>
+      <p class="lead">${escapeHtml(profile.heroSubtitle)} Pedido: ${escapeHtml(text)}</p>
+      <a class="cta" href="#">${escapeHtml(profile.cta)}</a>
+    </section>
+    <section class="grid">${sectionsHtml}</section>
+    <p class="footer">Site gerado automaticamente com foco em conversão e usabilidade.</p>
+  </main>
 </body>
 </html>`,
     css: "",
@@ -503,115 +638,263 @@ function fallbackCodeBundle(prompt) {
   };
 }
 
-function coerceCodeBundle(candidate, fallback) {
+function coerceCodeBundle(candidate) {
   const source = candidate && typeof candidate === "object" ? candidate : {};
-  const html = safeText(source.html, fallback.html);
-  const css = safeText(source.css, fallback.css || "");
-  const js = safeText(source.js, fallback.js || "");
+  const nested = source.code && typeof source.code === "object" ? source.code : null;
+  const htmlSource = nested ? nested.html : source.html;
+  const cssSource = nested ? nested.css : source.css;
+  const jsSource = nested ? nested.js : source.js;
+  let html = safeText(htmlSource, "");
+  let css = typeof cssSource === "string" ? cssSource : "";
+  let js = typeof jsSource === "string" ? jsSource : "";
+
+  // Some providers return JSON-double-encoded payload inside html.
+  if (html.startsWith("{") && html.includes("\"html\"")) {
+    const reparsed = extractFirstJsonObject(html);
+    if (reparsed && typeof reparsed === "object") {
+      const inner = coerceCodeBundle(reparsed);
+      if (inner.html) {
+        html = inner.html;
+        css = inner.css || css;
+        js = inner.js || js;
+      }
+    } else {
+      const htmlMatch = html.match(/"html"\s*:\s*"([\s\S]*?)"\s*,\s*"css"\s*:/i);
+      const cssMatch = html.match(/"css"\s*:\s*"([\s\S]*?)"\s*,\s*"js"\s*:/i);
+      const jsMatch = html.match(/"js"\s*:\s*"([\s\S]*?)"\s*}\s*$/i);
+      const htmlOnlyMatch = html.match(/"html"\s*:\s*"([\s\S]*?)"\s*}\s*$/i);
+      const encodedHtml = htmlMatch?.[1] || htmlOnlyMatch?.[1] || "";
+      if (htmlMatch?.[1]) {
+        try {
+          html = JSON.parse(`"${encodedHtml}"`);
+          if (cssMatch?.[1]) css = JSON.parse(`"${cssMatch[1]}"`);
+          if (jsMatch?.[1]) js = JSON.parse(`"${jsMatch[1]}"`);
+        } catch {
+          // keep original values when salvage parse fails
+        }
+      } else if (encodedHtml) {
+        try {
+          html = JSON.parse(`"${encodedHtml}"`);
+        } catch {
+          // keep original values when salvage parse fails
+        }
+      }
+    }
+  }
+
+  // Last-resort salvage when html comes wrapped/escaped inside a JSON string.
+  if (html.startsWith("{") && /<html[\s>]|<!doctype html/i.test(html)) {
+    let decoded = html;
+    if (decoded.includes("\\n") || decoded.includes('\\"')) {
+      decoded = decoded.replace(/\\n/g, "\n").replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+    }
+    const start = decoded.search(/<!doctype html|<html[\s>]/i);
+    const lower = decoded.toLowerCase();
+    const end = lower.lastIndexOf("</html>");
+    if (start >= 0) {
+      html = end > start ? decoded.slice(start, end + 7) : decoded.slice(start);
+    }
+  }
   return { html, css, js };
 }
 
+function looksLikeLowQualityOutput(prompt, codeBundle) {
+  const promptText = String(prompt || "").toLowerCase();
+  const merged = `${codeBundle?.html || ""}\n${codeBundle?.css || ""}\n${codeBundle?.js || ""}`.toLowerCase();
+  if (!merged.trim()) return true;
+
+  const sectionCount =
+    (merged.match(/<section\b/g) || []).length +
+    (merged.match(/<article\b/g) || []).length +
+    (merged.match(/<main\b/g) || []).length;
+  if (sectionCount < 2) return true;
+
+  if (/sua empresa|site gerado por ia|lorem ipsum/.test(merged) && !/sua empresa|site gerado|lorem ipsum/.test(promptText)) {
+    return true;
+  }
+
+  if (/(clinica|clínica|dentista|odont|fisioterapia|sa[uú]de)/i.test(promptText)) {
+    if (!/(consulta|paciente|agend|especialidad|atendimento|cl[íi]nica|m[eé]dico|m[eé]dica)/i.test(merged)) {
+      return true;
+    }
+  }
+
+  if (/(restaurante|pizzaria|hamburg|caf[eé]|bar|delivery)/i.test(promptText)) {
+    if (!/(card[aá]pio|menu|prato|reserva|delivery|cozinha|mesa)/i.test(merged)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function generateCodeBundleWithZai({ prompt, previous, context }) {
-  if (!ZAI_API_KEY) return null;
+  if (!ZAI_API_KEY) {
+    throw new Error("zai_api_key_missing");
+  }
 
   const systemPrompt = [
-    "You are a senior frontend engineer.",
-    "Return only strict JSON with keys: html, css, js.",
-    "html can be a complete HTML document or a body fragment.",
-    "Do not use markdown, do not explain, output only JSON.",
-    "Follow the user prompt exactly and make visual changes obvious.",
-    "Keep code static and safe for direct browser rendering.",
+    "You are a principal frontend engineer focused on production-ready marketing websites.",
+    "Return only strict JSON with keys: html, css, js. Never markdown.",
+    "The html key MUST contain a full complete HTML document.",
+    "Follow the user prompt exactly and make every requested detail explicit in layout, copy and styling.",
+    "Do NOT output generic placeholders such as 'Sua empresa' unless user explicitly requested that phrase.",
+    "Never default to a simplistic single-screen page.",
+    "Always build a robust multi-section website with: hero, value proposition, services/benefits, trust proof (testimonials or metrics), FAQ or process, and strong CTA.",
+    "If the prompt is broad (example: 'site para minha clínica'), infer a high-quality complete website for that business segment.",
+    "If a color theme is requested, apply it consistently across the entire interface.",
+    "Use the same language as the user prompt.",
+    "Output static, secure browser-safe code with responsive design.",
+    "Keep the output concise enough to fit response limits. Prefer reusable CSS classes and avoid verbose repetitive markup.",
   ].join("\n");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(5000, ZAI_TIMEOUT_MS));
+  const attempts = [
+    { temperature: 0.45, strictHint: "" },
+    {
+      temperature: 0.25,
+      strictHint: "CRITICAL: return a single JSON object only. No prose, no markdown fences.",
+    },
+  ];
 
-  try {
-    const response = await fetch(`${ZAI_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${ZAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: ZAI_MODEL,
-        temperature: 0.45,
-        max_tokens: 3200,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: JSON.stringify({
-              prompt: String(prompt || "").slice(0, 1800),
-              previous: previous || null,
-              context: context || {},
-            }),
-          },
-        ],
+  let lastError = null;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const attemptLabel = `attempt_${index + 1}`;
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "code_generate_attempt",
+        attemptLabel,
+        attempt: index + 1,
+        customerId: context?.customerId || null,
       }),
-      signal: controller.signal,
-    });
+    );
 
-    const raw = await response.text();
-    const parsed = safeJson(raw);
-    if (!response.ok) {
-      throw new Error(`zai_http_${response.status}:${raw || "unknown"}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(8000, ZAI_TIMEOUT_MS));
+    try {
+      const response = await fetch(`${ZAI_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ZAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: ZAI_MODEL,
+          thinking: { type: "disabled" },
+          temperature: attempt.temperature,
+          max_tokens: 3600,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: JSON.stringify({
+                prompt: String(prompt || "").slice(0, 1800),
+                previous: previous || null,
+                context: context || {},
+                strict: attempt.strictHint,
+              }),
+            },
+          ],
+        }),
+        signal: controller.signal,
+      });
+
+      const raw = await response.text();
+      const parsed = safeJson(raw);
+      if (!response.ok) {
+        throw new Error(`zai_http_${response.status}:${raw || "unknown"}`);
+      }
+      const message = parsed?.choices?.[0]?.message || {};
+      const content = typeof message.content === "string" ? message.content : "";
+      const reasoning = typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+      let modelPayload = extractFirstJsonObject(content) || extractFirstJsonObject(reasoning);
+      if (!modelPayload && /<html[\s>]|<!doctype html/i.test(content)) {
+        modelPayload = { html: content, css: "", js: "" };
+      }
+      if (!modelPayload || typeof modelPayload !== "object") {
+        throw new Error("zai_invalid_json_output");
+      }
+      const coerced = coerceCodeBundle(modelPayload);
+      const valid = codeBundleSchema.safeParse(coerced);
+      if (!valid.success) {
+        throw new Error("zai_invalid_code_schema");
+      }
+      if (looksLikeLowQualityOutput(prompt, valid.data)) {
+        throw new Error("zai_low_quality_output");
+      }
+      return { code: valid.data, retryCount: index };
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "code_generate_attempt_failed",
+          attemptLabel,
+          attempt: index + 1,
+          customerId: context?.customerId || null,
+          error: String(error),
+        }),
+      );
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
     }
-    const content = parsed?.choices?.[0]?.message?.content;
-    const modelPayload = extractFirstJsonObject(content) || extractFirstJsonObject(raw);
-    if (!modelPayload || typeof modelPayload !== "object") {
-      throw new Error("zai_invalid_json_output");
-    }
-    const coerced = coerceCodeBundle(modelPayload, fallbackCodeBundle(prompt));
-    const valid = codeBundleSchema.safeParse(coerced);
-    if (!valid.success) {
-      throw new Error("zai_invalid_code_schema");
-    }
-    return valid.data;
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastError || new Error("code_generation_failed");
 }
 
 function codeToBuilderSpec(prompt, codeBundle, currentBuilder = null) {
-  const base = inferBaseSpec(prompt, {}, currentBuilder);
-  const finalCode = coerceCodeBundle(codeBundle, fallbackCodeBundle(prompt));
+  const _unused = currentBuilder;
+  void _unused;
+  const summary = summarizePrompt(prompt, 120) || "Site gerado por IA";
+  const finalCode = coerceCodeBundle(codeBundle);
   const mergedHtml = composeDocument(finalCode);
+  const compatibilityBlocks = [
+    {
+      id: "legacy-hero",
+      label: "Legacy Hero",
+      title: summary,
+      body: "Compatibilidade temporária do payload legado.",
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "legacy-main",
+      label: "Legacy Main",
+      title: "Conteúdo principal",
+      body: "Renderização oficial no V3 usa code { html, css, js }.",
+      enabled: true,
+      origin: "default",
+    },
+    {
+      id: "legacy-cta",
+      label: "Legacy CTA",
+      title: "Ação",
+      body: "Fluxo legado preservado temporariamente para não quebrar integrações.",
+      enabled: true,
+      origin: "default",
+    },
+  ];
+
   return {
-    ...base,
+    businessName: "",
+    segment: "",
+    city: "",
+    audience: "",
+    offerSummary: summary,
+    mainDifferential: "",
+    templateId: "legacy",
+    paletteId: "legacy",
+    headline: summary,
+    subheadline: "Payload legado de compatibilidade (deprecated).",
+    ctaLabel: "Falar no WhatsApp",
+    whatsappNumber: "",
+    heroImageUrl: "",
     customHtml: mergedHtml,
     customCss: "",
     customJs: "",
-    blocks: normalizeBlocks(
-      [
-        {
-          id: "preview",
-          label: "Preview",
-          title: summarizePrompt(prompt, 72) || "Preview gerado",
-          body: "Código livre gerado por IA.",
-          enabled: true,
-          origin: "custom",
-        },
-        {
-          id: "edicao",
-          label: "Edição",
-          title: "Refine por prompt",
-          body: "Envie ajustes e a IA reescreve o HTML/CSS/JS.",
-          enabled: true,
-          origin: "custom",
-        },
-        {
-          id: "deploy",
-          label: "Deploy",
-          title: "Pronto para publicar",
-          body: "Quando aprovar o preview, publique no link final.",
-          enabled: true,
-          origin: "custom",
-        },
-      ],
-      base.blocks,
-      base.ctaLabel,
-    ),
+    blocks: compatibilityBlocks,
   };
 }
 
@@ -867,10 +1150,86 @@ async function publishFinal(payload, slug) {
   };
 }
 
+async function publishPreviewCode(payload, slug) {
+  const dir = path.join(SITE_PUBLISH_ROOT, "sites-preview", slug);
+  const html = composeDocument(payload.code);
+  if (!html) throw new Error("code_bundle_empty_html");
+
+  const metadata = {
+    mode: "preview",
+    slug,
+    orderId: payload.orderId,
+    updatedAt: new Date().toISOString(),
+    source: "site-builder-v3-raw",
+  };
+  await writeSiteBundle(dir, metadata, html);
+
+  return {
+    stage: "preview_ready",
+    slug,
+    url: `${PUBLIC_BASE_URL}/sites-preview/${encodeURIComponent(slug)}`,
+  };
+}
+
+async function publishFinalCode(payload, slug) {
+  const tmpRoot = path.join(SITE_PUBLISH_ROOT, ".tmp");
+  const targetDir = path.join(SITE_PUBLISH_ROOT, "sites", slug);
+  const tmpDir = path.join(tmpRoot, `${slug}-${Date.now()}`);
+  const html = composeDocument(payload.code);
+  if (!html) throw new Error("code_bundle_empty_html");
+
+  const metadata = {
+    mode: "final",
+    slug,
+    orderId: payload.orderId,
+    updatedAt: new Date().toISOString(),
+    source: "site-builder-v3-raw",
+  };
+
+  await fs.mkdir(tmpRoot, { recursive: true });
+  await writeSiteBundle(tmpDir, metadata, html);
+
+  const backupDir = `${targetDir}.__old`;
+  let hadPriorBuild = false;
+
+  try {
+    await fs.rename(targetDir, backupDir);
+    hadPriorBuild = true;
+  } catch {
+    // no prior stable build
+  }
+
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  try {
+    await fs.rename(tmpDir, targetDir);
+  } catch (error) {
+    if (hadPriorBuild) {
+      try {
+        await fs.rename(backupDir, targetDir);
+      } catch {
+        // best effort rollback
+      }
+    }
+    throw error;
+  }
+
+  try {
+    await fs.rm(backupDir, { recursive: true, force: true });
+  } catch {
+    // best effort cleanup
+  }
+
+  return {
+    stage: "published",
+    slug,
+    url: `${PUBLIC_BASE_URL}/sites/${encodeURIComponent(slug)}`,
+  };
+}
+
 app.get("/health", async (_req, res) => {
   return res.json({
     ok: true,
-    engine: "bolt-diy-adapter-v1",
+    engine: SITE_BUILDER_V3_RAW ? "site-builder-v3-raw" : "bolt-diy-adapter-v1",
     vendorPath: BOLT_VENDOR_PATH,
     vendorPresent: hasBoltVendor(),
   });
@@ -930,36 +1289,101 @@ app.post("/v1/code/generate", async (req, res) => {
 
   try {
     const { prompt, previous, context } = parsed.data;
-    let code = fallbackCodeBundle(prompt);
-    let engine = "fallback-code";
+    if (!SITE_BUILDER_V3_RAW) {
+      let code = fallbackCodeBundle(prompt);
+      let engine = "fallback-code";
 
-    try {
-      const aiCode = await generateCodeBundleWithZai({ prompt, previous: previous || null, context: context || {} });
-      if (aiCode) {
-        code = aiCode;
-        engine = `zai-${ZAI_MODEL}`;
+      try {
+        const aiResult = await generateCodeBundleWithZai({ prompt, previous: previous || null, context: context || {} });
+        if (aiResult?.code) {
+          code = aiResult.code;
+          engine = `zai-${ZAI_MODEL}`;
+        }
+      } catch (zaiError) {
+        console.error("code_generate_zai_failed", String(zaiError));
       }
-    } catch (zaiError) {
-      console.error("code_generate_zai_failed", String(zaiError));
+
+      const builderSpec = codeToBuilderSpec(prompt, code, null);
+      const validSpec = builderSpecSchema.safeParse(builderSpec);
+      if (!validSpec.success) {
+        return res.status(500).json({ error: "code_generate_invalid_spec", issues: validSpec.error.flatten() });
+      }
+
+      return res.json({
+        code,
+        builderSpec: validSpec.data,
+        meta: {
+          engine,
+          generatedAt: new Date().toISOString(),
+          aiEnabled: Boolean(ZAI_API_KEY),
+          retryCount: 0,
+          deprecated: "builderSpec is legacy. Use code {html,css,js}.",
+        },
+      });
     }
 
+    const aiResult = await generateCodeBundleWithZai({ prompt, previous: previous || null, context: context || {} });
+    const code = aiResult.code;
+    const retryCount = aiResult.retryCount;
     const builderSpec = codeToBuilderSpec(prompt, code, null);
     const validSpec = builderSpecSchema.safeParse(builderSpec);
     if (!validSpec.success) {
-      return res.status(500).json({ error: "code_generate_invalid_spec", issues: validSpec.error.flatten() });
+      return res.status(500).json({ error: "code_generate_invalid_legacy_spec", issues: validSpec.error.flatten() });
     }
 
+    codeGenerationFailureCounter.delete(promptFailureKey(prompt));
     return res.json({
       code,
       builderSpec: validSpec.data,
       meta: {
-        engine,
+        engine: `zai-${ZAI_MODEL}`,
         generatedAt: new Date().toISOString(),
         aiEnabled: Boolean(ZAI_API_KEY),
+        retryCount,
+        deprecated: "builderSpec is legacy. Use code {html,css,js}.",
       },
     });
   } catch (error) {
-    return res.status(500).json({ error: "code_generate_failed", message: String(error) });
+    const key = promptFailureKey(parsed.data.prompt);
+    const failures = (codeGenerationFailureCounter.get(key) || 0) + 1;
+    codeGenerationFailureCounter.set(key, failures);
+    return res.status(502).json({
+      error: "code_generation_failed",
+      message: "Falha ao gerar o site com IA. Tente novamente.",
+      retryCount: 2,
+      failuresForPrompt: failures,
+      detail: String(error),
+    });
+  }
+});
+
+app.post("/v1/publish/preview-code", async (req, res) => {
+  const parsed = publishCodeSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: "invalid_payload", issues: parsed.error.flatten() });
+  }
+
+  try {
+    const slug = slugify(parsed.data.slug || parsed.data.orderId, `site-${Date.now()}`);
+    const published = await publishPreviewCode(parsed.data, slug);
+    return res.status(201).json(published);
+  } catch (error) {
+    return res.status(500).json({ error: "preview_code_publish_failed", message: String(error) });
+  }
+});
+
+app.post("/v1/publish/final-code", async (req, res) => {
+  const parsed = publishCodeSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: "invalid_payload", issues: parsed.error.flatten() });
+  }
+
+  try {
+    const slug = slugify(parsed.data.slug || parsed.data.orderId, `site-${Date.now()}`);
+    const published = await publishFinalCode(parsed.data, slug);
+    return res.status(201).json(published);
+  } catch (error) {
+    return res.status(500).json({ error: "final_code_publish_failed", message: String(error) });
   }
 });
 

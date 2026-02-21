@@ -25,6 +25,7 @@ const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace
 const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
 const META_API_BASE = "https://graph.facebook.com";
 const SITE_BUILDER_API_BASE_URL = (process.env.SITE_BUILDER_API_BASE_URL || "http://localhost:3340").replace(/\/+$/, "");
+const SITE_BUILDER_V3_RAW = String(process.env.SITE_BUILDER_V3_RAW || "true").trim().toLowerCase() !== "false";
 
 if (!DATABASE_URL) throw new Error("DATABASE_URL é obrigatória");
 if (!JWT_SECRET || JWT_SECRET.length < 24) throw new Error("JWT_SECRET inválida");
@@ -161,7 +162,16 @@ const liveSiteGenerateSchema = z.object({
 
 const liveSitePublishSchema = z.object({
   slug: z.string().min(2).max(120),
-  builderSpec: z.record(z.any()),
+  code: z
+    .object({
+      html: z.string().max(250000).optional(),
+      css: z.string().max(120000).optional(),
+      js: z.string().max(120000).optional(),
+    })
+    .optional(),
+  builderSpec: z.record(z.any()).optional(),
+}).refine((value) => Boolean(value.code || value.builderSpec), {
+  message: "code ou builderSpec é obrigatório",
 });
 
 const sitePublicationSchema = z.object({
@@ -330,6 +340,17 @@ function safeJson(raw) {
   }
 }
 
+function createSiteBuilderHttpError(status, data, raw) {
+  const safeStatus = Number(status) || 500;
+  const payload = data && typeof data === "object" && !Array.isArray(data) ? data : { raw };
+  const message = typeof payload.error === "string" ? payload.error : raw || "site_builder_unavailable";
+  const error = new Error(`site_builder_http_${safeStatus}:${message}`);
+  error.status = safeStatus;
+  error.payload = payload;
+  error.raw = raw;
+  return error;
+}
+
 async function siteBuilderApi(apiPath, payload) {
   const response = await fetch(`${SITE_BUILDER_API_BASE_URL}${apiPath}`, {
     method: "POST",
@@ -341,8 +362,7 @@ async function siteBuilderApi(apiPath, payload) {
   const raw = await response.text();
   const data = safeJson(raw);
   if (!response.ok) {
-    const message = typeof data.error === "string" ? data.error : raw || "site_builder_unavailable";
-    throw new Error(`site_builder_http_${response.status}:${message}`);
+    throw createSiteBuilderHttpError(response.status, data, raw);
   }
   return data;
 }
@@ -362,7 +382,10 @@ function toLiveSiteSlug(customerId, input) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
   const customerPart = String(customerId || "").slice(0, 8).toLowerCase();
-  if (base) return `${base}-${customerPart}`;
+  if (base) {
+    if (customerPart && base.endsWith(`-${customerPart}`)) return base;
+    return customerPart ? `${base}-${customerPart}`.slice(0, 64) : base;
+  }
   return `site-${customerPart}-${Date.now().toString(36)}`;
 }
 
@@ -894,32 +917,89 @@ app.post("/v1/site/live/generate", async (req, res) => {
 
   try {
     const { prompt, previous } = parsed.data;
-    const generation = await siteBuilderApi("/v1/code/generate", {
+    if (SITE_BUILDER_V3_RAW) {
+      const generation = await siteBuilderApi("/v1/code/generate", {
+        prompt,
+        previous: previous?.code || undefined,
+        context: { customerId: req.user.id },
+      });
+      const code = generation?.code;
+      if (!code || typeof code !== "object" || typeof code.html !== "string" || !code.html.trim()) {
+        return res.status(502).json({ error: "Resposta inválida do gerador de código." });
+      }
+
+      const slug = toLiveSiteSlug(req.user.id, previous?.slug || prompt || "site");
+      const preview = await siteBuilderApi("/v1/publish/preview-code", {
+        orderId: `live-${req.user.id}-${Date.now()}`,
+        customerId: req.user.id,
+        slug,
+        code,
+      });
+
+      return res.json({
+        slug: String(preview.slug || slug),
+        previewUrl: String(preview.url || ""),
+        publicUrl: null,
+        code,
+        builderSpec: generation?.builderSpec || null,
+        meta: generation?.meta || {},
+      });
+    }
+
+    const autobuild = await siteBuilderApi("/v1/autobuild", {
       prompt,
-      previous: previous?.code || undefined,
       context: { customerId: req.user.id },
+      currentBuilder: previous?.builderSpec || undefined,
+      forceRegenerate: true,
     });
-    if (!generation?.builderSpec || typeof generation.builderSpec !== "object") {
+    if (!autobuild?.builderSpec || typeof autobuild.builderSpec !== "object") {
       return res.status(502).json({ error: "Resposta inválida do builder." });
     }
 
-    const slug = toLiveSiteSlug(req.user.id, previous?.slug || generation.builderSpec.businessName || "site");
+    const slug = toLiveSiteSlug(req.user.id, previous?.slug || autobuild.builderSpec.businessName || "site");
     const preview = await siteBuilderApi("/v1/publish/preview", {
       orderId: `live-${req.user.id}-${Date.now()}`,
       customerId: req.user.id,
       slug,
-      builderSpec: generation.builderSpec,
+      builderSpec: autobuild.builderSpec,
     });
 
     return res.json({
       slug: String(preview.slug || slug),
       previewUrl: String(preview.url || ""),
       publicUrl: null,
-      builderSpec: generation.builderSpec,
-      code: generation.code || null,
-      meta: generation.meta || {},
+      builderSpec: autobuild.builderSpec,
+      code: null,
+      meta: autobuild.meta || {},
     });
   } catch (error) {
+    const upstream = error && typeof error === "object" ? error : null;
+    const upstreamPayload = upstream && typeof upstream.payload === "object" && upstream.payload ? upstream.payload : null;
+    if (upstreamPayload?.error === "code_generation_failed") {
+      const retryCount = Number.isFinite(Number(upstreamPayload.retryCount)) ? Number(upstreamPayload.retryCount) : 2;
+      const detail = String(upstreamPayload.detail || "");
+      let message = "Falha ao gerar site com IA. Tente novamente.";
+      if (/zai_api_key_missing/i.test(detail)) {
+        message = "ZAI_API_KEY não configurada no servidor.";
+      } else if (/zai_http_401/i.test(detail)) {
+        message = "Chave da IA inválida ou expirada no servidor.";
+      } else if (/zai_http_429/i.test(detail)) {
+        message = "Limite da IA atingido no momento. Tente novamente em instantes.";
+      } else if (typeof upstreamPayload.message === "string" && upstreamPayload.message.trim()) {
+        message = upstreamPayload.message;
+      }
+      log("warn", "site_live_generate_failed_typed", {
+        customerId: req.user.id,
+        retryCount,
+        failuresForPrompt: upstreamPayload.failuresForPrompt,
+      });
+      return res.status(502).json({
+        error: "code_generation_failed",
+        message,
+        retryCount,
+      });
+    }
+
     log("error", "site_live_generate_failed", { customerId: req.user.id, error: String(error) });
     return res.status(502).json({ error: "Falha ao gerar preview do site." });
   }
@@ -930,13 +1010,21 @@ app.post("/v1/site/live/publish", async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
 
   try {
-    const { slug, builderSpec } = parsed.data;
-    const published = await siteBuilderApi("/v1/publish/final", {
-      orderId: `live-${req.user.id}-${Date.now()}`,
-      customerId: req.user.id,
-      slug: toLiveSiteSlug(req.user.id, slug),
-      builderSpec,
-    });
+    const { slug, builderSpec, code } = parsed.data;
+    const normalizedSlug = toLiveSiteSlug(req.user.id, slug);
+    const published = code
+      ? await siteBuilderApi("/v1/publish/final-code", {
+          orderId: `live-${req.user.id}-${Date.now()}`,
+          customerId: req.user.id,
+          slug: normalizedSlug,
+          code,
+        })
+      : await siteBuilderApi("/v1/publish/final", {
+          orderId: `live-${req.user.id}-${Date.now()}`,
+          customerId: req.user.id,
+          slug: normalizedSlug,
+          builderSpec,
+        });
 
     return res.json({
       slug: String(published.slug || slug),
