@@ -2,6 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { Pool } = require("pg");
 const { z } = require("zod");
@@ -16,6 +18,12 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const OPS_API_KEY = process.env.OPS_API_KEY;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const WORKER_LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS || 120);
+const ASSET_STORAGE_DIR = process.env.ASSET_STORAGE_DIR || path.resolve(__dirname, "../storage/order-assets");
+const ADS_DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.ADS_DASHBOARD_CACHE_TTL_SECONDS || 300);
+const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
+const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace(/^act_/, "");
+const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
+const META_API_BASE = "https://graph.facebook.com";
 
 if (!DATABASE_URL) throw new Error("DATABASE_URL é obrigatória");
 if (!JWT_SECRET || JWT_SECRET.length < 24) throw new Error("JWT_SECRET inválida");
@@ -31,7 +39,7 @@ app.use(
     methods: ["GET", "POST", "PATCH"],
   }),
 );
-app.use(express.json({ limit: "256kb" }));
+app.use(express.json({ limit: "25mb" }));
 
 function log(level, message, meta = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, message, ...meta }));
@@ -105,6 +113,25 @@ const heartbeatSchema = z.object({
   workerId: z.string().min(2).max(120),
   lastError: z.string().max(1000).optional(),
   claimed: z.boolean().optional(),
+});
+
+const orderAssetKindSchema = z.enum(["image", "video"]);
+
+const uploadAssetSchema = z.object({
+  fileName: z.string().min(1).max(240),
+  mimeType: z.string().min(3).max(120),
+  base64Data: z.string().min(32),
+  kind: orderAssetKindSchema.optional(),
+  sizeBytes: z.number().int().positive().max(30 * 1024 * 1024).optional(),
+});
+
+const adsPublicationSchema = z.object({
+  metaCampaignId: z.string().min(2).max(120).optional(),
+  metaAdsetId: z.string().min(2).max(120).optional(),
+  metaAdId: z.string().min(2).max(120).optional(),
+  metaCreativeId: z.string().min(2).max(120).optional(),
+  status: z.string().min(2).max(60),
+  rawResponse: z.any().optional(),
 });
 
 function parseBearerToken(req) {
@@ -210,11 +237,159 @@ function mapApproval(row) {
   };
 }
 
+function mapOrderAsset(row) {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    kind: row.kind,
+    originalFileName: row.original_file_name,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes || 0),
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+function mapAdsPublication(row) {
+  if (!row) return null;
+  return {
+    orderId: row.order_id,
+    customerId: row.customer_id,
+    metaCampaignId: row.meta_campaign_id || null,
+    metaAdsetId: row.meta_adset_id || null,
+    metaAdId: row.meta_ad_id || null,
+    metaCreativeId: row.meta_creative_id || null,
+    status: row.status || "unknown",
+    rawResponse: row.raw_response || {},
+    lastSyncAt: row.last_sync_at ? row.last_sync_at.toISOString() : null,
+    updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
+  };
+}
+
+function safeBaseName(input) {
+  const raw = String(input || "").trim() || "asset.bin";
+  const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
+  return cleaned || "asset.bin";
+}
+
+function normalizeMimeType(mimeType, fileName) {
+  const normalized = String(mimeType || "").trim().toLowerCase();
+  if (normalized.startsWith("image/")) return normalized;
+  if (normalized.startsWith("video/")) return normalized;
+  const ext = path.extname(String(fileName || "").toLowerCase());
+  if ([".jpg", ".jpeg", ".png", ".webp"].includes(ext)) return "image/jpeg";
+  if ([".mp4", ".mov", ".m4v", ".webm"].includes(ext)) return "video/mp4";
+  return normalized || "application/octet-stream";
+}
+
+function mimeToAssetKind(mimeType) {
+  const lower = String(mimeType || "").toLowerCase();
+  if (lower.startsWith("video/")) return "video";
+  return "image";
+}
+
+function extractLeadActions(actions) {
+  if (!Array.isArray(actions)) return 0;
+  return actions.reduce((acc, item) => {
+    if (!item || typeof item !== "object") return acc;
+    const type = String(item.action_type || "");
+    const value = Number(item.value || 0);
+    if (!Number.isFinite(value)) return acc;
+    if (
+      type === "lead" ||
+      type === "onsite_conversion.lead_grouped" ||
+      type === "offsite_conversion.fb_pixel_lead" ||
+      type === "onsite_web_lead"
+    ) {
+      return acc + value;
+    }
+    return acc;
+  }, 0);
+}
+
+function isMetaConfigured() {
+  return Boolean(META_ACCESS_TOKEN && /^\d+$/.test(META_AD_ACCOUNT_ID));
+}
+
+async function ensureAssetStorageDir() {
+  await fs.mkdir(ASSET_STORAGE_DIR, { recursive: true });
+}
+
+async function metaGet(apiPath, params = {}) {
+  const url = new URL(`${META_API_BASE}/${META_GRAPH_VERSION}/${String(apiPath).replace(/^\/+/, "")}`);
+  const query = { ...params, access_token: META_ACCESS_TOKEN };
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
+
+  const response = await fetch(url, { method: "GET" });
+  const raw = await response.text();
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    payload = { raw };
+  }
+  if (!response.ok) {
+    const error = new Error(`meta_http_${response.status}`);
+    error.meta = payload;
+    throw error;
+  }
+  return payload;
+}
+
+async function buildMetaDashboardSnapshot() {
+  const [accountInsights, adInsights] = await Promise.all([
+    metaGet(`act_${META_AD_ACCOUNT_ID}/insights`, {
+      date_preset: "this_month",
+      level: "account",
+      fields: "spend,actions",
+      limit: "1",
+    }),
+    metaGet(`act_${META_AD_ACCOUNT_ID}/insights`, {
+      date_preset: "this_month",
+      level: "ad",
+      fields: "ad_id,ad_name,campaign_name,adset_name,spend,actions",
+      limit: "100",
+    }),
+  ]);
+
+  const accountRow = Array.isArray(accountInsights.data) && accountInsights.data[0] ? accountInsights.data[0] : null;
+  const adRows = Array.isArray(adInsights.data) ? adInsights.data : [];
+  const monthlySpend = Number(accountRow?.spend || 0);
+  const monthlyLeads =
+    accountRow && Array.isArray(accountRow.actions)
+      ? extractLeadActions(accountRow.actions)
+      : adRows.reduce((acc, row) => acc + extractLeadActions(row.actions), 0);
+  const cpl = monthlyLeads > 0 ? monthlySpend / monthlyLeads : null;
+  const activeCampaigns = new Set(adRows.map((row) => String(row.campaign_name || "").trim()).filter(Boolean)).size;
+
+  return {
+    source: "remote",
+    updatedAt: new Date().toISOString(),
+    monthlySpend,
+    monthlyLeads,
+    cpl,
+    activeCampaigns,
+    activeCreatives: adRows.length,
+    creativesRunning: adRows.slice(0, 20).map((row) => ({
+      id: String(row.ad_id || randomUUID()),
+      name: String(row.ad_name || "Criativo"),
+      campaignName: String(row.campaign_name || "Campanha"),
+      adSetName: String(row.adset_name || ""),
+      status: "active",
+      spend: Number(row.spend || 0),
+      leads: extractLeadActions(row.actions),
+      updatedAt: new Date().toISOString(),
+    })),
+  };
+}
+
 async function getOrderDetail(client, orderId) {
   const orderRes = await client.query(`select * from orders where id = $1`, [orderId]);
   if (orderRes.rowCount === 0) return null;
 
-  const [eventsRes, deliverablesRes, approvalsRes] = await Promise.all([
+  const [eventsRes, deliverablesRes, approvalsRes, assetsRes, publicationRes] = await Promise.all([
     client.query(`select * from order_events where order_id = $1 order by ts asc`, [orderId]),
     client.query(`select * from deliverables where order_id = $1 order by updated_at desc`, [orderId]),
     client.query(
@@ -224,6 +399,8 @@ async function getOrderDetail(client, orderId) {
        order by a.updated_at desc`,
       [orderId],
     ),
+    client.query(`select * from order_assets where order_id = $1 order by created_at desc`, [orderId]),
+    client.query(`select * from ads_publications where order_id = $1`, [orderId]),
   ]);
 
   return {
@@ -231,6 +408,8 @@ async function getOrderDetail(client, orderId) {
     events: eventsRes.rows.map(mapEvent),
     deliverables: deliverablesRes.rows.map(mapDeliverable),
     approvals: approvalsRes.rows.map(mapApproval),
+    assets: assetsRes.rows.map(mapOrderAsset),
+    adsPublication: publicationRes.rowCount > 0 ? mapAdsPublication(publicationRes.rows[0]) : null,
   };
 }
 
@@ -414,6 +593,159 @@ app.get("/v1/orders/:id", async (req, res) => {
   } catch (error) {
     log("error", "order_detail_failed", { orderId, error: String(error) });
     return res.status(500).json({ error: "Falha ao buscar pedido." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/orders/:id/assets", async (req, res) => {
+  const parsed = uploadAssetSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  const orderId = req.params.id;
+  const customerId = req.user.id;
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+    const order = await client.query(`select * from orders where id = $1 and customer_id = $2 for update`, [orderId, customerId]);
+    if (order.rowCount === 0) {
+      await client.query("rollback");
+      return res.status(404).json({ error: "Pedido não encontrado." });
+    }
+    if (order.rows[0].status !== "draft") {
+      await client.query("rollback");
+      return res.status(409).json({ error: "Só é possível enviar assets em pedido de rascunho." });
+    }
+
+    const fileName = safeBaseName(parsed.data.fileName);
+    const mimeType = normalizeMimeType(parsed.data.mimeType, fileName);
+    const inferredKind = mimeToAssetKind(mimeType);
+    const kind = parsed.data.kind || inferredKind;
+    if (kind !== inferredKind) {
+      await client.query("rollback");
+      return res.status(400).json({ error: "Tipo de arquivo incompatível com o mimeType." });
+    }
+
+    let buffer;
+    try {
+      buffer = Buffer.from(parsed.data.base64Data, "base64");
+    } catch {
+      await client.query("rollback");
+      return res.status(400).json({ error: "Arquivo em base64 inválido." });
+    }
+    if (!buffer || buffer.length === 0) {
+      await client.query("rollback");
+      return res.status(400).json({ error: "Arquivo vazio." });
+    }
+    if (buffer.length > 30 * 1024 * 1024) {
+      await client.query("rollback");
+      return res.status(413).json({ error: "Arquivo acima de 30MB." });
+    }
+
+    await ensureAssetStorageDir();
+    const extension = path.extname(fileName) || (kind === "video" ? ".mp4" : ".jpg");
+    const assetId = randomUUID();
+    const safeStorageName = `${assetId}${extension}`;
+    const storagePath = path.join(ASSET_STORAGE_DIR, safeStorageName);
+    await fs.writeFile(storagePath, buffer);
+
+    const inserted = await client.query(
+      `insert into order_assets (id, order_id, kind, original_file_name, storage_path, mime_type, size_bytes)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       returning *`,
+      [assetId, orderId, kind, fileName, storagePath, mimeType, buffer.length],
+    );
+
+    await appendEvent(client, {
+      orderId,
+      actor: "client",
+      message: `Asset de anúncio enviado (${kind}).`,
+      statusSnapshot: "draft",
+    });
+
+    await client.query("commit");
+    return res.status(201).json(mapOrderAsset(inserted.rows[0]));
+  } catch (error) {
+    await client.query("rollback");
+    log("error", "order_asset_upload_failed", { orderId, customerId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao enviar asset." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/v1/orders/:id/assets", async (req, res) => {
+  const orderId = req.params.id;
+  const customerId = req.user.id;
+  const client = await pool.connect();
+  try {
+    const owns = await client.query(`select 1 from orders where id = $1 and customer_id = $2`, [orderId, customerId]);
+    if (owns.rowCount === 0) return res.status(404).json({ error: "Pedido não encontrado." });
+    const result = await client.query(`select * from order_assets where order_id = $1 order by created_at desc`, [orderId]);
+    return res.json(result.rows.map(mapOrderAsset));
+  } catch {
+    return res.status(500).json({ error: "Falha ao listar assets." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/v1/ads/dashboard", async (req, res) => {
+  const customerId = req.user.id;
+  const client = await pool.connect();
+  try {
+    const cached = await client.query(
+      `select snapshot, updated_at
+       from ads_dashboard_snapshots
+       where customer_id = $1`,
+      [customerId],
+    );
+    if (cached.rowCount > 0) {
+      const updatedAt = cached.rows[0].updated_at ? cached.rows[0].updated_at.getTime() : 0;
+      if (Date.now() - updatedAt <= ADS_DASHBOARD_CACHE_TTL_SECONDS * 1000) {
+        return res.json(cached.rows[0].snapshot || {});
+      }
+    }
+
+    let snapshot;
+    if (isMetaConfigured()) {
+      snapshot = await buildMetaDashboardSnapshot();
+    } else {
+      const fallback = await client.query(
+        `select status, count(*) as total
+         from ads_publications
+         where customer_id = $1
+         group by status`,
+        [customerId],
+      );
+      const totalActive = fallback.rows.reduce((acc, row) => {
+        if (String(row.status || "").toUpperCase() === "ACTIVE") return acc + Number(row.total || 0);
+        return acc;
+      }, 0);
+      snapshot = {
+        source: "remote",
+        updatedAt: new Date().toISOString(),
+        monthlySpend: 0,
+        monthlyLeads: 0,
+        cpl: null,
+        activeCampaigns: totalActive,
+        activeCreatives: totalActive,
+        creativesRunning: [],
+      };
+    }
+
+    await client.query(
+      `insert into ads_dashboard_snapshots (customer_id, snapshot)
+       values ($1, $2::jsonb)
+       on conflict (customer_id)
+       do update set snapshot = excluded.snapshot, updated_at = now()`,
+      [customerId, JSON.stringify(snapshot)],
+    );
+    return res.json(snapshot);
+  } catch (error) {
+    log("error", "ads_dashboard_failed", { customerId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao carregar dashboard de anúncios." });
   } finally {
     client.release();
   }
@@ -781,6 +1113,86 @@ app.post("/v1/ops/orders/:id/deliverables", requireRole(["worker", "ops"]), asyn
   }
 });
 
+app.post("/v1/ops/orders/:id/ads-publication", requireRole(["worker", "ops"]), async (req, res) => {
+  const parsed = adsPublicationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  const orderId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const order = await client.query(`select id, customer_id from orders where id = $1 for update`, [orderId]);
+    if (order.rowCount === 0) {
+      await client.query("rollback");
+      return res.status(404).json({ error: "Pedido não encontrado." });
+    }
+
+    const row = order.rows[0];
+    await client.query(
+      `insert into ads_publications (
+        order_id, customer_id, meta_campaign_id, meta_adset_id, meta_ad_id, meta_creative_id, status, raw_response, last_sync_at
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, now())
+      on conflict (order_id)
+      do update set
+        customer_id = excluded.customer_id,
+        meta_campaign_id = excluded.meta_campaign_id,
+        meta_adset_id = excluded.meta_adset_id,
+        meta_ad_id = excluded.meta_ad_id,
+        meta_creative_id = excluded.meta_creative_id,
+        status = excluded.status,
+        raw_response = excluded.raw_response,
+        last_sync_at = now(),
+        updated_at = now()`,
+      [
+        orderId,
+        row.customer_id,
+        parsed.data.metaCampaignId || null,
+        parsed.data.metaAdsetId || null,
+        parsed.data.metaAdId || null,
+        parsed.data.metaCreativeId || null,
+        parsed.data.status,
+        JSON.stringify(parsed.data.rawResponse || {}),
+      ],
+    );
+
+    await appendEvent(client, {
+      orderId,
+      actor: req.role === "ops" ? "ops" : "codex",
+      message: `Publicação Meta atualizada (${parsed.data.status}).`,
+    });
+
+    await client.query("commit");
+    return res.json({ ok: true });
+  } catch (error) {
+    await client.query("rollback");
+    log("error", "ops_ads_publication_failed", { orderId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao salvar publicação de anúncio." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/v1/ops/assets/:assetId/content", requireRole(["worker", "ops"]), async (req, res) => {
+  const assetId = req.params.assetId;
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`select * from order_assets where id = $1`, [assetId]);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Asset não encontrado." });
+    const row = result.rows[0];
+    const content = await fs.readFile(row.storage_path);
+    res.setHeader("content-type", row.mime_type || "application/octet-stream");
+    res.setHeader("content-length", String(content.length));
+    res.setHeader("x-file-name", row.original_file_name || "asset.bin");
+    return res.status(200).send(content);
+  } catch (error) {
+    log("error", "ops_asset_download_failed", { assetId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao baixar asset." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/v1/ops/orders/:id/complete", requireRole(["worker", "ops"]), async (req, res) => {
   const parsed = completeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
@@ -969,6 +1381,10 @@ app.get("/v1/ops/metrics", requireRole(["ops", "worker"]), async (_req, res) => 
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Rota não encontrada." });
+});
+
+void ensureAssetStorageDir().catch((error) => {
+  log("error", "asset_storage_prepare_failed", { error: String(error), dir: ASSET_STORAGE_DIR });
 });
 
 app.listen(PORT, () => {

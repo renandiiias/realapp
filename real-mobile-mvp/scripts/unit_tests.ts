@@ -77,6 +77,8 @@ function testApprovalUpdatesDeliverableAndOrder() {
         updatedAt: "2026-02-13T00:00:00.000Z",
       },
     ],
+    assets: [],
+    adsPublication: null,
   };
 
   const s1 = ordersReducer(initialOrdersState, { type: "UPSERT_DETAIL", detail });

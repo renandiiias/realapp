@@ -1,4 +1,4 @@
-import type { ApprovalStatus, JsonObject, Order, OrderDetail, OrderStatus, OrderType } from "./types";
+import type { ApprovalStatus, JsonObject, Order, OrderAsset, OrderDetail, OrderStatus, OrderType } from "./types";
 
 export type CreateOrderInput = {
   type: OrderType;
@@ -21,6 +21,14 @@ export type SetApprovalInput = {
   feedback?: string;
 };
 
+export type UploadOrderAssetInput = {
+  fileName: string;
+  mimeType: string;
+  base64Data: string;
+  kind?: "image" | "video";
+  sizeBytes?: number;
+};
+
 export type QueueClient = {
   getCustomerId(): Promise<string>;
 
@@ -33,10 +41,11 @@ export type QueueClient = {
   updateOrder(orderId: string, input: UpdateOrderInput): Promise<Order>;
   listOrders(): Promise<Order[]>;
   getOrder(orderId: string): Promise<OrderDetail>;
+  uploadOrderAsset(orderId: string, input: UploadOrderAssetInput): Promise<OrderAsset>;
+  listOrderAssets(orderId: string): Promise<OrderAsset[]>;
   submitOrder(orderId: string): Promise<SubmitResult>;
   postOrderInfo(orderId: string, message: string): Promise<OrderDetail>;
 
   // Approvals.
   setApproval(deliverableId: string, input: SetApprovalInput): Promise<void>;
 };
-

@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { CreateOrderInput, QueueClient, SetApprovalInput, UpdateOrderInput } from "./QueueClient";
-import type { Approval, Deliverable, Order, OrderDetail, OrderStatus } from "./types";
+import type { CreateOrderInput, QueueClient, SetApprovalInput, UpdateOrderInput, UploadOrderAssetInput } from "./QueueClient";
+import type { Approval, Deliverable, Order, OrderAsset, OrderDetail, OrderStatus } from "./types";
 import { HttpQueueClient } from "./HttpQueueClient";
 import { MockQueueClient } from "./MockQueueClient";
 
@@ -38,6 +38,8 @@ type QueueContextValue = {
   createOrder(input: CreateOrderInput): Promise<Order>;
   updateOrder(orderId: string, input: UpdateOrderInput): Promise<Order>;
   submitOrder(orderId: string): Promise<void>;
+  uploadOrderAsset(orderId: string, input: UploadOrderAssetInput): Promise<OrderAsset>;
+  listOrderAssets(orderId: string): Promise<OrderAsset[]>;
   postOrderInfo(orderId: string, message: string): Promise<void>;
   setApproval(deliverableId: string, input: SetApprovalInput): Promise<void>;
 
@@ -215,6 +217,22 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     [client, refresh],
   );
 
+  const uploadOrderAsset = useCallback(
+    async (orderId: string, input: UploadOrderAssetInput) => {
+      const asset = await client.uploadOrderAsset(orderId, input);
+      await refresh();
+      return asset;
+    },
+    [client, refresh],
+  );
+
+  const listOrderAssets = useCallback(
+    async (orderId: string) => {
+      return client.listOrderAssets(orderId);
+    },
+    [client],
+  );
+
   const postOrderInfo = useCallback(
     async (orderId: string, message: string) => {
       await client.postOrderInfo(orderId, message);
@@ -272,6 +290,8 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     createOrder,
     updateOrder,
     submitOrder,
+    uploadOrderAsset,
+    listOrderAssets,
     postOrderInfo,
     setApproval,
     getOrder,

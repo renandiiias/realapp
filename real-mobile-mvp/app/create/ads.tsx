@@ -1,6 +1,8 @@
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState, useRef } from "react";
-import { ScrollView, StyleSheet, View, Animated, Pressable, Dimensions } from "react-native";
+import { useEffect, useState, useRef } from "react";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
@@ -8,51 +10,53 @@ import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
 import { Field } from "../../src/ui/components/Field";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
+import { Body, Title } from "../../src/ui/components/Typography";
 import { SPACING, ANIMATION_DURATION } from "../../src/utils/constants";
 
-const { width } = Dimensions.get('window');
-
 type Step =
-  | { id: 'welcome'; type: 'message' }
-  | { id: 'objective'; type: 'input'; question: string; key: 'objective' }
-  | { id: 'offer'; type: 'input'; question: string; key: 'offer' }
-  | { id: 'budget'; type: 'choice'; question: string; key: 'budget'; options: Array<{ label: string; value: string }> }
-  | { id: 'audience'; type: 'input'; question: string; key: 'audience' }
-  | { id: 'region'; type: 'input'; question: string; key: 'region' }
-  | { id: 'style'; type: 'choice'; question: string; key: 'style'; options: Array<{ label: string; value: string; subtitle: string }> }
-  | { id: 'review'; type: 'review' };
+  | { id: "welcome"; type: "message" }
+  | { id: "objective"; type: "input"; question: string; key: "objective" }
+  | { id: "offer"; type: "input"; question: string; key: "offer" }
+  | { id: "budget"; type: "choice"; question: string; key: "budget"; options: Array<{ label: string; value: string }> }
+  | { id: "audience"; type: "input"; question: string; key: "audience" }
+  | { id: "region"; type: "input"; question: string; key: "region" }
+  | { id: "destinationWhatsApp"; type: "input"; question: string; key: "destinationWhatsApp" }
+  | { id: "style"; type: "choice"; question: string; key: "style"; options: Array<{ label: string; value: string; subtitle: string }> }
+  | { id: "media"; type: "media" }
+  | { id: "review"; type: "review" };
 
 const CONVERSATION_STEPS: Step[] = [
-  { id: 'welcome', type: 'message' },
-  { id: 'objective', type: 'input', question: 'Qual o objetivo da campanha?', key: 'objective' },
-  { id: 'offer', type: 'input', question: 'Qual a oferta principal?', key: 'offer' },
+  { id: "welcome", type: "message" },
+  { id: "objective", type: "input", question: "Qual o objetivo da campanha?", key: "objective" },
+  { id: "offer", type: "input", question: "Qual a oferta principal?", key: "offer" },
   {
-    id: 'budget',
-    type: 'choice',
-    question: 'Quanto você quer investir por mês?',
-    key: 'budget',
+    id: "budget",
+    type: "choice",
+    question: "Quanto você quer investir por mês?",
+    key: "budget",
     options: [
-      { label: 'Até R$ 500', value: 'ate_500' },
-      { label: 'R$ 500 - R$ 1.500', value: '500_1500' },
-      { label: 'R$ 1.500 - R$ 5.000', value: '1500_5000' },
-      { label: 'Mais de R$ 5.000', value: '5000_mais' },
-    ]
+      { label: "Até R$ 500", value: "ate_500" },
+      { label: "R$ 500 - R$ 1.500", value: "500_1500" },
+      { label: "R$ 1.500 - R$ 5.000", value: "1500_5000" },
+      { label: "Mais de R$ 5.000", value: "5000_mais" },
+    ],
   },
-  { id: 'audience', type: 'input', question: 'Quem é seu público-alvo?', key: 'audience' },
-  { id: 'region', type: 'input', question: 'Qual região quer alcançar?', key: 'region' },
+  { id: "audience", type: "input", question: "Quem é seu público-alvo?", key: "audience" },
+  { id: "region", type: "input", question: "Qual região quer alcançar?", key: "region" },
+  { id: "destinationWhatsApp", type: "input", question: "Qual WhatsApp deve receber as mensagens?", key: "destinationWhatsApp" },
   {
-    id: 'style',
-    type: 'choice',
-    question: 'Qual estilo de criativo prefere?',
-    key: 'style',
+    id: "style",
+    type: "choice",
+    question: "Qual estilo de criativo prefere?",
+    key: "style",
     options: [
-      { label: 'Antes x Depois', value: 'antes_depois', subtitle: 'Mostra resultados' },
-      { label: 'Problema → Solução', value: 'problema_solucao', subtitle: 'Educacional' },
-      { label: 'Prova Social', value: 'prova_social', subtitle: 'Depoimentos reais' },
-    ]
+      { label: "Antes x Depois", value: "antes_depois", subtitle: "Mostra resultados" },
+      { label: "Problema → Solução", value: "problema_solucao", subtitle: "Educacional" },
+      { label: "Prova Social", value: "prova_social", subtitle: "Depoimentos reais" },
+    ],
   },
-  { id: 'review', type: 'review' },
+  { id: "media", type: "media" },
+  { id: "review", type: "review" },
 ];
 
 interface ConversationData {
@@ -61,7 +65,72 @@ interface ConversationData {
   budget: string;
   audience: string;
   region: string;
+  destinationWhatsApp: string;
   style: string;
+}
+
+type LocalMedia = {
+  uri: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: "image" | "video";
+};
+
+function normalizeE164(raw: string): string | null {
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  if (!cleaned) return null;
+  if (cleaned.startsWith("+")) {
+    const digits = cleaned.slice(1).replace(/\D/g, "");
+    if (digits.length < 10 || digits.length > 15) return null;
+    return `+${digits}`;
+  }
+  const digits = cleaned.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 13) return null;
+  return `+${digits.length <= 11 ? `55${digits}` : digits}`;
+}
+
+function guessMime(kind: "image" | "video", uri: string): string {
+  const lower = uri.toLowerCase();
+  if (kind === "image") {
+    if (lower.endsWith(".png")) return "image/png";
+    if (lower.endsWith(".webp")) return "image/webp";
+    return "image/jpeg";
+  }
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".webm")) return "video/webm";
+  return "video/mp4";
+}
+
+async function pickMedia(kind: "image" | "video"): Promise<LocalMedia | null> {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) {
+    Alert.alert("Permissão", "Permita acesso à galeria para enviar criativo.");
+    return null;
+  }
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: kind === "image" ? ImagePicker.MediaTypeOptions.Images : ImagePicker.MediaTypeOptions.Videos,
+    quality: 1,
+  });
+
+  if (result.canceled || !result.assets?.[0]) return null;
+  const selected = result.assets[0];
+  const info = await FileSystem.getInfoAsync(selected.uri);
+  const sizeBytes = typeof (info as { size?: number }).size === "number" ? (info as { size: number }).size : 0;
+  if (!sizeBytes || sizeBytes > 30 * 1024 * 1024) {
+    Alert.alert("Arquivo inválido", "Use arquivo de até 30MB.");
+    return null;
+  }
+
+  const fileName = (selected.fileName || `${kind}_${Date.now()}`).replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return {
+    uri: selected.uri,
+    fileName,
+    mimeType: selected.mimeType || guessMime(kind, selected.uri),
+    sizeBytes,
+    kind,
+  };
 }
 
 export default function AdsWizard() {
@@ -73,14 +142,17 @@ export default function AdsWizard() {
 
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [data, setData] = useState<ConversationData>({
-    objective: prompt || '',
-    offer: '',
-    budget: '',
-    audience: '',
-    region: '',
-    style: '',
+    objective: prompt || "",
+    offer: "",
+    budget: "",
+    audience: "",
+    region: "",
+    destinationWhatsApp: auth.companyProfile?.whatsappBusiness ?? "",
+    style: "",
   });
-  const [inputValue, setInputValue] = useState('');
+  const [inputValue, setInputValue] = useState("");
+  const [media, setMedia] = useState<LocalMedia | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
@@ -113,58 +185,100 @@ export default function AdsWizard() {
     ]).start();
 
     scrollRef.current?.scrollTo({ y: 0, animated: true });
-  }, [currentStepIndex]);
+  }, [currentStepIndex, fadeAnim, slideAnim]);
 
   const handleNext = (value?: string) => {
     if (!currentStep) return;
 
-    if (currentStep.type === 'input' && currentStep.key) {
-      setData(prev => ({ ...prev, [currentStep.key]: value || inputValue }));
-      setInputValue('');
-    } else if (currentStep.type === 'choice' && currentStep.key && value) {
-      setData(prev => ({ ...prev, [currentStep.key]: value }));
+    if (currentStep.type === "input" && currentStep.key) {
+      setData((prev) => ({ ...prev, [currentStep.key]: value || inputValue }));
+      setInputValue("");
+    } else if (currentStep.type === "choice" && currentStep.key && value) {
+      setData((prev) => ({ ...prev, [currentStep.key]: value }));
     }
 
     if (currentStepIndex < CONVERSATION_STEPS.length - 1) {
-      setCurrentStepIndex(prev => prev + 1);
+      setCurrentStepIndex((prev) => prev + 1);
     }
   };
 
   const handleBack = () => {
     if (currentStepIndex > 0) {
-      setCurrentStepIndex(prev => prev - 1);
+      setCurrentStepIndex((prev) => prev - 1);
     }
   };
 
   const handleSubmit = async () => {
-    const title = data.offer ? `Tráfego: ${data.offer.slice(0, 36)}` : 'Tráfego (Meta)';
+    if (submitting) return;
+    if (!media) {
+      Alert.alert("Mídia obrigatória", "Selecione imagem ou vídeo para publicar o anúncio.");
+      return;
+    }
+
+    const destinationWhatsApp = normalizeE164(data.destinationWhatsApp);
+    if (!destinationWhatsApp) {
+      Alert.alert("WhatsApp inválido", "Informe um WhatsApp válido, exemplo: +5511999999999");
+      return;
+    }
+
+    setSubmitting(true);
+    const title = data.offer ? `Tráfego: ${data.offer.slice(0, 36)}` : "Tráfego (Meta)";
     const summary = `${data.objective} • ${data.budget} • ${data.region}`;
-    const payload = {
+    const customerName = String(auth.companyProfile?.companyName || "").trim();
+    const payloadBase = {
       objective: data.objective,
       offer: data.offer,
       budget: data.budget,
       audience: data.audience,
       region: data.region,
+      destinationWhatsApp,
       style: data.style,
       preferredCreative: data.style,
+      customerName: customerName || undefined,
+      mediaAssetIds: [] as string[],
     };
 
     let id = orderId;
 
-    if (!id) {
-      const created = await queue.createOrder({ type: "ads", title, summary, payload });
-      id = created.id;
-    } else {
-      await queue.updateOrder(id, { title, summary, payload });
-    }
+    try {
+      if (!id) {
+        const created = await queue.createOrder({ type: "ads", title, summary, payload: payloadBase });
+        id = created.id;
+      } else {
+        await queue.updateOrder(id, { title, summary, payload: payloadBase });
+      }
 
-    if (!auth.profileProductionComplete) {
-      router.push({ pathname: "/onboarding/ray-x", params: { mode: "production", pendingOrderId: id } });
-      return;
-    }
+      const base64Data = await FileSystem.readAsStringAsync(media.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
-    await queue.submitOrder(id);
-    router.navigate("/orders");
+      const uploaded = await queue.uploadOrderAsset(id, {
+        fileName: media.fileName,
+        mimeType: media.mimeType,
+        base64Data,
+        kind: media.kind,
+        sizeBytes: media.sizeBytes,
+      });
+
+      await queue.updateOrder(id, {
+        payload: { ...payloadBase, mediaAssetIds: [uploaded.id] },
+        title,
+        summary,
+      });
+
+      if (!auth.profileProductionComplete) {
+        router.push({ pathname: "/onboarding/ray-x", params: { mode: "production", pendingOrderId: id } });
+        return;
+      }
+
+      await queue.submitOrder(id);
+      router.navigate("/orders");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha ao enviar pedido.";
+      Alert.alert("Erro", message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const progress = ((currentStepIndex + 1) / CONVERSATION_STEPS.length) * 100;
@@ -178,8 +292,8 @@ export default function AdsWizard() {
               styles.progressFill,
               {
                 width: `${progress}%`,
-                opacity: fadeAnim
-              }
+                opacity: fadeAnim,
+              },
             ]}
           />
         </View>
@@ -202,15 +316,13 @@ export default function AdsWizard() {
             styles.stepContainer,
             {
               opacity: fadeAnim,
-              transform: [{ translateY: slideAnim }]
-            }
+              transform: [{ translateY: slideAnim }],
+            },
           ]}
         >
-          {currentStep?.type === 'message' && (
-            <WelcomeStep onNext={() => handleNext()} />
-          )}
+          {currentStep?.type === "message" && <WelcomeStep onNext={() => handleNext()} />}
 
-          {currentStep?.type === 'input' && (
+          {currentStep?.type === "input" && (
             <InputStep
               question={currentStep.question}
               value={inputValue || data[currentStep.key]}
@@ -220,25 +332,23 @@ export default function AdsWizard() {
             />
           )}
 
-          {currentStep?.type === 'choice' && (
-            <ChoiceStep
-              question={currentStep.question}
-              options={currentStep.options}
-              selected={data[currentStep.key]}
-              onSelect={handleNext}
+          {currentStep?.type === "choice" && (
+            <ChoiceStep question={currentStep.question} options={currentStep.options} selected={data[currentStep.key]} onSelect={handleNext} />
+          )}
+
+          {currentStep?.type === "media" && (
+            <MediaStep
+              media={media}
+              onPickImage={() => void pickMedia("image").then((item) => item && setMedia(item))}
+              onPickVideo={() => void pickMedia("video").then((item) => item && setMedia(item))}
+              onNext={() => handleNext()}
             />
           )}
 
-          {currentStep?.type === 'review' && (
-            <ReviewStep
-              data={data}
-              onSubmit={handleSubmit}
-              onEdit={(stepId) => {
-                const index = CONVERSATION_STEPS.findIndex(s => s.id === stepId);
-                if (index !== -1) setCurrentStepIndex(index);
-              }}
-            />
-          )}
+          {currentStep?.type === "review" && <ReviewStep data={data} media={media} onSubmit={handleSubmit} submitting={submitting} onEdit={(stepId) => {
+            const index = CONVERSATION_STEPS.findIndex((s) => s.id === stepId);
+            if (index !== -1) setCurrentStepIndex(index);
+          }} />}
         </Animated.View>
       </ScrollView>
     </Screen>
@@ -265,7 +375,7 @@ function InputStep({
   value,
   onChange,
   onNext,
-  placeholder
+  placeholder,
 }: {
   question: string;
   value: string;
@@ -281,15 +391,10 @@ function InputStep({
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
-        multiline={question.includes('público') || question.includes('região')}
+        multiline={question.includes("público") || question.includes("região")}
         autoFocus
       />
-      <Button
-        label="Continuar"
-        onPress={() => onNext(value)}
-        disabled={!value.trim()}
-        size="large"
-      />
+      <Button label="Continuar" onPress={() => onNext(value)} disabled={!value.trim()} size="large" />
     </View>
   );
 }
@@ -298,7 +403,7 @@ function ChoiceStep({
   question,
   options,
   selected,
-  onSelect
+  onSelect,
 }: {
   question: string;
   options: Array<{ label: string; value: string; subtitle?: string }>;
@@ -310,28 +415,14 @@ function ChoiceStep({
       <Title style={styles.question}>{question}</Title>
       <View style={styles.options}>
         {options.map((option) => (
-          <Pressable
-            key={option.value}
-            onPress={() => onSelect(option.value)}
-            style={[
-              styles.optionCard,
-              selected === option.value && styles.optionCardSelected
-            ]}
-          >
+          <Pressable key={option.value} onPress={() => onSelect(option.value)} style={[styles.optionCard, selected === option.value && styles.optionCardSelected]}>
             <View style={styles.optionContent}>
-              <Body style={[
-                styles.optionLabel,
-                selected === option.value && styles.optionLabelSelected
-              ]}>
+              <Body style={selected === option.value ? styles.optionLabelActive : styles.optionLabel}>
                 {option.label}
               </Body>
-              {option.subtitle && (
-                <Body style={styles.optionSubtitle}>{option.subtitle}</Body>
-              )}
+              {option.subtitle && <Body style={styles.optionSubtitle}>{option.subtitle}</Body>}
             </View>
-            {selected === option.value && (
-              <Body style={styles.checkmark}>✓</Body>
-            )}
+            {selected === option.value && <Body style={styles.checkmark}>✓</Body>}
           </Pressable>
         ))}
       </View>
@@ -339,26 +430,61 @@ function ChoiceStep({
   );
 }
 
+function MediaStep({
+  media,
+  onPickImage,
+  onPickVideo,
+  onNext,
+}: {
+  media: LocalMedia | null;
+  onPickImage: () => void;
+  onPickVideo: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <View style={styles.choiceContainer}>
+      <Title style={styles.question}>Envie o criativo (imagem ou vídeo)</Title>
+      <Body style={styles.mediaHint}>Esse arquivo será usado para publicar o anúncio na Meta.</Body>
+      <View style={styles.options}>
+        <Button label="Selecionar imagem" onPress={onPickImage} />
+        <Button label="Selecionar vídeo" variant="secondary" onPress={onPickVideo} />
+      </View>
+      {media ? (
+        <Card variant="subtle">
+          <Body style={styles.mediaSelected}>Arquivo: {media.fileName}</Body>
+          <Body style={styles.mediaSelected}>Tipo: {media.kind}</Body>
+          <Body style={styles.mediaSelected}>Tamanho: {Math.round(media.sizeBytes / 1024)} KB</Body>
+        </Card>
+      ) : null}
+      <Button label="Continuar" onPress={onNext} disabled={!media} size="large" />
+    </View>
+  );
+}
+
 function ReviewStep({
   data,
+  media,
   onSubmit,
-  onEdit
+  submitting,
+  onEdit,
 }: {
   data: ConversationData;
+  media: LocalMedia | null;
   onSubmit: () => void;
+  submitting: boolean;
   onEdit: (stepId: string) => void;
 }) {
   const budgetLabels: Record<string, string> = {
-    'ate_500': 'Até R$ 500',
-    '500_1500': 'R$ 500 - R$ 1.500',
-    '1500_5000': 'R$ 1.500 - R$ 5.000',
-    '5000_mais': 'Mais de R$ 5.000',
+    ate_500: "Até R$ 500",
+    "500_1500": "R$ 500 - R$ 1.500",
+    "1500_5000": "R$ 1.500 - R$ 5.000",
+    "5000_mais": "Mais de R$ 5.000",
   };
 
   const styleLabels: Record<string, string> = {
-    'antes_depois': 'Antes x Depois',
-    'problema_solucao': 'Problema → Solução',
-    'prova_social': 'Prova Social',
+    antes_depois: "Antes x Depois",
+    problema_solucao: "Problema → Solução",
+    prova_social: "Prova Social",
   };
 
   return (
@@ -369,42 +495,19 @@ function ReviewStep({
       <Title style={styles.reviewTitle}>Perfeito! Revise sua campanha</Title>
 
       <Card variant="subtle" style={styles.reviewCard}>
-        <ReviewItem
-          label="Objetivo"
-          value={data.objective}
-          onEdit={() => onEdit('objective')}
-        />
-        <ReviewItem
-          label="Oferta"
-          value={data.offer}
-          onEdit={() => onEdit('offer')}
-        />
-        <ReviewItem
-          label="Investimento"
-          value={budgetLabels[data.budget] || data.budget}
-          onEdit={() => onEdit('budget')}
-        />
-        <ReviewItem
-          label="Público-alvo"
-          value={data.audience}
-          onEdit={() => onEdit('audience')}
-        />
-        <ReviewItem
-          label="Região"
-          value={data.region}
-          onEdit={() => onEdit('region')}
-        />
-        <ReviewItem
-          label="Estilo criativo"
-          value={styleLabels[data.style] || data.style}
-          onEdit={() => onEdit('style')}
-        />
+        <ReviewItem label="Objetivo" value={data.objective} onEdit={() => onEdit("objective")} />
+        <ReviewItem label="Oferta" value={data.offer} onEdit={() => onEdit("offer")} />
+        <ReviewItem label="Investimento" value={budgetLabels[data.budget] || data.budget} onEdit={() => onEdit("budget")} />
+        <ReviewItem label="Público-alvo" value={data.audience} onEdit={() => onEdit("audience")} />
+        <ReviewItem label="Região" value={data.region} onEdit={() => onEdit("region")} />
+        <ReviewItem label="WhatsApp destino" value={data.destinationWhatsApp} onEdit={() => onEdit("destinationWhatsApp")} />
+        <ReviewItem label="Estilo criativo" value={styleLabels[data.style] || data.style} onEdit={() => onEdit("style")} />
+        <ReviewItem label="Mídia" value={media ? `${media.fileName} (${media.kind})` : "Não selecionada"} onEdit={() => onEdit("media")} />
       </Card>
 
-      <Button label="Enviar para Real 🚀" onPress={onSubmit} size="large" />
-      <Body style={styles.reviewNote}>
-        A Real vai criar, otimizar e acompanhar sua campanha. Você recebe atualizações em tempo real.
-      </Body>
+      <Button label={submitting ? "Enviando..." : "Enviar para Real 🚀"} onPress={onSubmit} size="large" disabled={submitting} />
+      {submitting ? <ActivityIndicator color={realTheme.colors.green} /> : null}
+      <Body style={styles.reviewNote}>A Real vai criar, otimizar e acompanhar sua campanha. Você recebe atualizações em tempo real.</Body>
     </View>
   );
 }
@@ -425,12 +528,13 @@ function ReviewItem({ label, value, onEdit }: { label: string; value: string; on
 
 function getPlaceholder(key: keyof ConversationData): string {
   const placeholders: Record<keyof ConversationData, string> = {
-    objective: 'Ex: Gerar leads qualificados',
-    offer: 'Ex: Consulta gratuita + material bônus',
-    budget: '',
-    audience: 'Ex: Empresários de 30-50 anos interessados em marketing',
-    region: 'Ex: São Paulo - Capital e região metropolitana',
-    style: '',
+    objective: "Ex: Gerar leads qualificados",
+    offer: "Ex: Consulta gratuita + material bônus",
+    budget: "",
+    audience: "Ex: Empresários de 30-50 anos interessados em marketing",
+    region: "Ex: São Paulo - Capital e região metropolitana",
+    destinationWhatsApp: "Ex: +5511999999999",
+    style: "",
   };
   return placeholders[key];
 }
@@ -443,17 +547,17 @@ const styles = StyleSheet.create({
   },
   progressBar: {
     height: 4,
-    backgroundColor: 'rgba(53, 226, 20, 0.1)',
+    backgroundColor: "rgba(53, 226, 20, 0.1)",
     borderRadius: 2,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   progressFill: {
-    height: '100%',
+    height: "100%",
     backgroundColor: realTheme.colors.green,
     borderRadius: 2,
   },
   backButton: {
-    alignSelf: 'flex-start',
+    alignSelf: "flex-start",
   },
   backText: {
     color: realTheme.colors.green,
@@ -468,7 +572,7 @@ const styles = StyleSheet.create({
     minHeight: 400,
   },
   welcomeContainer: {
-    alignItems: 'center',
+    alignItems: "center",
     gap: SPACING.lg,
     paddingVertical: SPACING.xl,
   },
@@ -476,20 +580,20 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: 'rgba(53, 226, 20, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(53, 226, 20, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
     marginBottom: SPACING.md,
   },
   icon: {
     fontSize: 40,
   },
   welcomeTitle: {
-    textAlign: 'center',
+    textAlign: "center",
     fontSize: 28,
   },
   welcomeText: {
-    textAlign: 'center',
+    textAlign: "center",
     color: realTheme.colors.muted,
     lineHeight: 24,
     paddingHorizontal: SPACING.md,
@@ -510,18 +614,18 @@ const styles = StyleSheet.create({
     gap: SPACING.md,
   },
   optionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     padding: SPACING.lg,
     borderRadius: realTheme.radius.md,
     borderWidth: 2,
-    borderColor: 'rgba(53, 226, 20, 0.2)',
-    backgroundColor: 'rgba(13, 15, 16, 0.6)',
+    borderColor: "rgba(53, 226, 20, 0.2)",
+    backgroundColor: "rgba(13, 15, 16, 0.6)",
   },
   optionCardSelected: {
     borderColor: realTheme.colors.green,
-    backgroundColor: 'rgba(53, 226, 20, 0.05)',
+    backgroundColor: "rgba(53, 226, 20, 0.05)",
   },
   optionContent: {
     flex: 1,
@@ -534,6 +638,11 @@ const styles = StyleSheet.create({
   optionLabelSelected: {
     color: realTheme.colors.green,
   },
+  optionLabelActive: {
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 16,
+    color: realTheme.colors.green,
+  },
   optionSubtitle: {
     color: realTheme.colors.muted,
     fontSize: 13,
@@ -542,24 +651,30 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: realTheme.colors.green,
   },
+  mediaHint: {
+    color: realTheme.colors.muted,
+  },
+  mediaSelected: {
+    color: realTheme.colors.text,
+  },
   reviewContainer: {
     gap: SPACING.lg,
     paddingTop: SPACING.lg,
   },
   reviewTitle: {
     fontSize: 24,
-    textAlign: 'center',
+    textAlign: "center",
   },
   reviewCard: {
     marginTop: SPACING.md,
   },
   reviewItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     paddingVertical: SPACING.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(53, 226, 20, 0.1)',
+    borderBottomColor: "rgba(53, 226, 20, 0.1)",
   },
   reviewItemContent: {
     flex: 1,
@@ -568,7 +683,7 @@ const styles = StyleSheet.create({
   reviewItemLabel: {
     color: realTheme.colors.muted,
     fontSize: 12,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   reviewItemValue: {
@@ -582,7 +697,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   reviewNote: {
-    textAlign: 'center',
+    textAlign: "center",
     color: realTheme.colors.muted,
     fontSize: 13,
     lineHeight: 20,

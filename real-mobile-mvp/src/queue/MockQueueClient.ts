@@ -1,6 +1,7 @@
 import type {
   Approval,
   ApprovalStatus,
+  OrderAsset,
   Deliverable,
   DeliverableStatus,
   DeliverableType,
@@ -15,6 +16,7 @@ import type {
   QueueClient,
   SetApprovalInput,
   SubmitResult,
+  UploadOrderAssetInput,
   UpdateOrderInput,
 } from "./QueueClient";
 import { uuidv4 } from "../utils/uuid";
@@ -582,6 +584,8 @@ function toOrderDetail(db: MockDbV1, orderId: string): OrderDetail {
     events: db.events[orderId] ?? [],
     deliverables: db.deliverables[orderId] ?? [],
     approvals: db.approvals[orderId] ?? [],
+    assets: db.assets[orderId] ?? [],
+    adsPublication: null,
   };
 }
 
@@ -593,7 +597,7 @@ export class MockQueueClient implements QueueClient {
   }
 
   private async load(): Promise<MockDbV1> {
-    return loadMockDb(() => {
+    const db = await loadMockDb(() => {
       const now = this.now();
       const customerId = uuidv4();
       const ts = iso(now);
@@ -609,8 +613,14 @@ export class MockQueueClient implements QueueClient {
         events: {},
         deliverables: {},
         approvals: {},
+        assets: {},
       };
     });
+    if (!db.assets) {
+      db.assets = {};
+      await saveMockDb(db);
+    }
+    return db;
   }
 
   async getCustomerId(): Promise<string> {
@@ -669,6 +679,7 @@ export class MockQueueClient implements QueueClient {
     db.events[id] = [];
     db.deliverables[id] = [];
     db.approvals[id] = [];
+    db.assets[id] = [];
     appendOrderEvent(db, now, {
       orderId: id,
       actor: "client",
@@ -714,6 +725,47 @@ export class MockQueueClient implements QueueClient {
     advanceAll(db, now);
     await saveMockDb(db);
     return toOrderDetail(db, orderId);
+  }
+
+  async uploadOrderAsset(orderId: string, input: UploadOrderAssetInput): Promise<OrderAsset> {
+    const db = await this.load();
+    const now = this.now();
+    const order = db.orders[orderId];
+    if (!order) throw new Error("order_not_found");
+    if (order.status !== "draft") throw new Error("asset_upload_only_draft");
+
+    const mimeType = String(input.mimeType || "application/octet-stream").trim().toLowerCase();
+    const inferredKind: OrderAsset["kind"] = mimeType.startsWith("video/") ? "video" : "image";
+    const kind = input.kind || inferredKind;
+    if (kind !== inferredKind) throw new Error("asset_kind_mismatch");
+
+    const approximateSize = typeof input.sizeBytes === "number" && input.sizeBytes > 0 ? input.sizeBytes : input.base64Data.length;
+    const asset: OrderAsset = {
+      id: uuidv4(),
+      orderId,
+      kind,
+      originalFileName: input.fileName || `asset_${Date.now()}`,
+      mimeType,
+      sizeBytes: approximateSize,
+      createdAt: iso(now),
+    };
+    const current = db.assets[orderId] ?? [];
+    db.assets[orderId] = [asset, ...current];
+    order.updatedAt = iso(now);
+    appendOrderEvent(db, now, {
+      orderId,
+      actor: "client",
+      message: `Asset de anúncio enviado (${kind}).`,
+      statusSnapshot: order.status,
+    });
+    await saveMockDb(db);
+    return asset;
+  }
+
+  async listOrderAssets(orderId: string): Promise<OrderAsset[]> {
+    const db = await this.load();
+    if (!db.orders[orderId]) throw new Error("order_not_found");
+    return db.assets[orderId] ?? [];
   }
 
   async submitOrder(orderId: string): Promise<SubmitResult> {

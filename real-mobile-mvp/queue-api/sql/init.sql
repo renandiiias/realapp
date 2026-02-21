@@ -76,10 +76,43 @@ create table if not exists worker_health (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists order_assets (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders(id) on delete cascade,
+  kind text not null check (kind in ('image', 'video')),
+  original_file_name text not null,
+  storage_path text not null,
+  mime_type text not null,
+  size_bytes bigint not null check (size_bytes > 0),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists ads_publications (
+  order_id uuid primary key references orders(id) on delete cascade,
+  customer_id uuid not null,
+  meta_campaign_id text,
+  meta_adset_id text,
+  meta_ad_id text,
+  meta_creative_id text,
+  status text not null default 'unknown',
+  raw_response jsonb not null default '{}'::jsonb,
+  last_sync_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists ads_dashboard_snapshots (
+  customer_id uuid primary key,
+  snapshot jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_orders_status_created on orders(status, created_at);
 create index if not exists idx_orders_customer_updated on orders(customer_id, updated_at desc);
 create index if not exists idx_order_events_order_ts on order_events(order_id, ts);
 create index if not exists idx_deliverables_order_updated on deliverables(order_id, updated_at desc);
+create index if not exists idx_order_assets_order_created on order_assets(order_id, created_at desc);
+create index if not exists idx_ads_publications_customer_updated on ads_publications(customer_id, updated_at desc);
 
 create or replace function set_updated_at()
 returns trigger as $$
@@ -100,3 +133,9 @@ create trigger trg_entitlements_updated_at before update on entitlements for eac
 
 drop trigger if exists trg_worker_health_updated_at on worker_health;
 create trigger trg_worker_health_updated_at before update on worker_health for each row execute function set_updated_at();
+
+drop trigger if exists trg_ads_publications_updated_at on ads_publications;
+create trigger trg_ads_publications_updated_at before update on ads_publications for each row execute function set_updated_at();
+
+drop trigger if exists trg_ads_dashboard_snapshots_updated_at on ads_dashboard_snapshots;
+create trigger trg_ads_dashboard_snapshots_updated_at before update on ads_dashboard_snapshots for each row execute function set_updated_at();

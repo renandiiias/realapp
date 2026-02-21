@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { Approval, Deliverable, Order, OrderEvent } from "../types";
+import type { Approval, Deliverable, Order, OrderAsset, OrderEvent } from "../types";
 
 export type MockDbV1 = {
   version: 1;
@@ -13,6 +13,7 @@ export type MockDbV1 = {
   events: Record<string, OrderEvent[]>;
   deliverables: Record<string, Deliverable[]>;
   approvals: Record<string, Approval[]>;
+  assets: Record<string, OrderAsset[]>;
 };
 
 const STORAGE_KEY = "real:mock:db:v1";
@@ -47,4 +48,3 @@ export async function loadMockDb(createInitial: () => MockDbV1): Promise<MockDbV
 export async function saveMockDb(db: MockDbV1): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(db));
 }
-

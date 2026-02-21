@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { QueueClient, CreateOrderInput, SetApprovalInput, SubmitResult, UpdateOrderInput } from "./QueueClient";
-import type { Order, OrderDetail } from "./types";
+import type { QueueClient, CreateOrderInput, SetApprovalInput, SubmitResult, UpdateOrderInput, UploadOrderAssetInput } from "./QueueClient";
+import type { Order, OrderAsset, OrderDetail } from "./types";
 import { uuidv4 } from "../utils/uuid";
 
 type Json = unknown;
@@ -88,6 +88,17 @@ export class HttpQueueClient implements QueueClient {
 
   async getOrder(orderId: string): Promise<OrderDetail> {
     return api<OrderDetail>(`${this.baseUrl}/v1/orders/${orderId}`, { method: "GET" });
+  }
+
+  async uploadOrderAsset(orderId: string, input: UploadOrderAssetInput): Promise<OrderAsset> {
+    return api<OrderAsset>(`${this.baseUrl}/v1/orders/${orderId}/assets`, {
+      method: "POST",
+      body: JSON.stringify(input satisfies Json),
+    });
+  }
+
+  async listOrderAssets(orderId: string): Promise<OrderAsset[]> {
+    return api<OrderAsset[]>(`${this.baseUrl}/v1/orders/${orderId}/assets`, { method: "GET" });
   }
 
   async submitOrder(orderId: string): Promise<SubmitResult> {

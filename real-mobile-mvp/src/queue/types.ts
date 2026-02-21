@@ -82,8 +82,33 @@ export type Approval = {
   updatedAt: string;
 };
 
+export type OrderAsset = {
+  id: string;
+  orderId: string;
+  kind: "image" | "video";
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+};
+
+export type AdsPublication = {
+  orderId: string;
+  customerId: string;
+  metaCampaignId: string | null;
+  metaAdsetId: string | null;
+  metaAdId: string | null;
+  metaCreativeId: string | null;
+  status: string;
+  rawResponse: JsonValue;
+  lastSyncAt: string | null;
+  updatedAt: string | null;
+};
+
 export type OrderDetail = Order & {
   events: OrderEvent[];
   deliverables: Deliverable[];
   approvals: Approval[];
+  assets: OrderAsset[];
+  adsPublication: AdsPublication | null;
 };
