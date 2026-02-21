@@ -1,4 +1,5 @@
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -204,8 +205,8 @@ export default function SiteCreatorV2() {
     <Screen plain style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <View style={styles.canvas}>
-          <View style={styles.bgGlowPrimary} />
-          <View style={styles.bgGlowSecondary} />
+          <View style={styles.heroVignette} />
+          <View style={styles.heroAmbient} />
           <LinearGradient
             colors={["#0A0D12", "#07090C"]}
             start={{ x: 0.5, y: 0 }}
@@ -219,21 +220,30 @@ export default function SiteCreatorV2() {
                 <View style={styles.glowHaloOuter} />
                 <View style={styles.glowHaloDots} />
                 <LinearGradient
-                  colors={["rgba(69,255,102,0.45)", "rgba(69,255,102,0.95)", "rgba(69,255,102,0.45)"]}
+                  colors={["rgba(69,255,102,0.25)", "rgba(69,255,102,0.95)", "rgba(69,255,102,0.25)"]}
                   start={{ x: 0, y: 0.5 }}
                   end={{ x: 1, y: 0.5 }}
                   style={styles.floatingInputWrap}
                 >
-                  <TextInput
-                    value={input}
-                    onChangeText={setInput}
-                    onSubmitEditing={() => void sendPrompt()}
-                    returnKeyType="send"
-                    blurOnSubmit
-                    placeholder={animatedPlaceholder}
-                    placeholderTextColor="rgba(255,255,255,0.35)"
-                    style={styles.floatingInput}
-                  />
+                  <View style={styles.floatingInner}>
+                    <TextInput
+                      value={input}
+                      onChangeText={setInput}
+                      onSubmitEditing={() => void sendPrompt()}
+                      returnKeyType="send"
+                      blurOnSubmit
+                      placeholder={animatedPlaceholder}
+                      placeholderTextColor="rgba(255,255,255,0.33)"
+                      style={styles.floatingInput}
+                    />
+                    <Pressable
+                      style={[styles.heroSendButton, (!input.trim() || loading || publishing) && styles.heroSendButtonDisabled]}
+                      onPress={() => void sendPrompt()}
+                      disabled={!input.trim() || loading || publishing}
+                    >
+                      <Ionicons name="arrow-up" size={18} color="#071306" />
+                    </Pressable>
+                  </View>
                 </LinearGradient>
               </View>
               <Text style={styles.heroHint}>Pressione Enter para começar.</Text>
@@ -323,23 +333,25 @@ const styles = StyleSheet.create({
   bgGradient: {
     ...StyleSheet.absoluteFillObject,
   },
-  bgGlowPrimary: {
+  heroVignette: {
     position: "absolute",
-    width: 900,
-    height: 600,
-    borderRadius: 900,
-    backgroundColor: "rgba(69,255,102,0.08)",
-    left: -120,
-    top: 120,
+    left: -2,
+    right: -2,
+    top: -2,
+    bottom: -2,
+    backgroundColor: "rgba(0,0,0,0.35)",
   },
-  bgGlowSecondary: {
+  heroAmbient: {
     position: "absolute",
-    width: 700,
-    height: 500,
-    borderRadius: 700,
-    backgroundColor: "rgba(69,255,102,0.05)",
-    left: -20,
-    top: 180,
+    width: 520,
+    height: 220,
+    left: "50%",
+    top: "56%",
+    marginLeft: -260,
+    marginTop: -110,
+    borderRadius: 260,
+    backgroundColor: "rgba(69,255,102,0.14)",
+    opacity: 0.35,
   },
   heroWrap: {
     flex: 1,
@@ -371,43 +383,67 @@ const styles = StyleSheet.create({
     width: "100%",
     borderRadius: 999,
     padding: 2,
-    shadowColor: "rgba(0,0,0,0.85)",
-    shadowOpacity: 0.55,
-    shadowRadius: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.65,
+    shadowRadius: 24,
     shadowOffset: { width: 0, height: 0 },
     elevation: 14,
+    borderWidth: 1,
+    borderColor: "rgba(69,255,102,0.22)",
   },
   glowHaloOuter: {
-    position: "absolute",
-    left: -26,
-    right: -26,
-    top: -26,
-    bottom: -26,
-    borderRadius: 999,
-    backgroundColor: "rgba(69,255,102,0.18)",
-    opacity: 0.9,
-  },
-  glowHaloDots: {
     position: "absolute",
     left: -14,
     right: -14,
     top: -14,
     bottom: -14,
     borderRadius: 999,
+    backgroundColor: "rgba(69,255,102,0.18)",
+    opacity: 0.9,
+  },
+  glowHaloDots: {
+    position: "absolute",
+    left: -10,
+    right: -10,
+    top: -10,
+    bottom: -10,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(69,255,102,0.22)",
-    opacity: 0.7,
+    borderColor: "rgba(69,255,102,0.10)",
+    opacity: 0.85,
+  },
+  floatingInner: {
+    borderRadius: 999,
+    backgroundColor: "rgba(9,12,16,0.66)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
+    minHeight: 60,
+    paddingRight: 10,
+    flexDirection: "row",
+    alignItems: "center",
   },
   floatingInput: {
+    flex: 1,
     color: "rgba(255,255,255,0.85)",
     fontFamily: realTheme.fonts.bodyRegular,
     fontSize: 18,
-    minHeight: 58,
+    minHeight: 56,
     borderRadius: 999,
     paddingHorizontal: 22,
-    backgroundColor: "rgba(10,14,18,0.72)",
+    backgroundColor: "transparent",
+  },
+  heroSendButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: realTheme.colors.green,
     borderWidth: 1,
-    borderColor: "rgba(69,255,102,0.22)",
+    borderColor: "rgba(69,255,102,0.35)",
+  },
+  heroSendButtonDisabled: {
+    opacity: 0.45,
   },
   workArea: {
     flex: 1,
