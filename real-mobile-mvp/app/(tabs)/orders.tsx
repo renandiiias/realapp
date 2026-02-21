@@ -2,16 +2,15 @@ import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { ImageBackground, Pressable, ScrollView, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
 import Svg, { Circle, Defs, Line, LinearGradient as SvgLinearGradient, Path, Rect, Stop } from "react-native-svg";
-import { fetchAdsDashboardSnapshot, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
+import { fetchAdsDashboardSnapshot, type AdsDashboardDailyPoint, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
 import { useQueue } from "../../src/queue/QueueProvider";
+import { buildGrowthData, buildKPIData, buildScaleProjection, calculateAdsDashboardMetrics } from "../../src/services/adsDashboardService";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body, SubTitle, Title } from "../../src/ui/components/Typography";
-import { getOrdersByType } from "../../src/services/orderService";
-import { buildKPIData, calculateAdsDashboardMetrics, generateFallbackRunningCreatives } from "../../src/services/adsDashboardService";
-import { formatBRL } from "../../src/utils/formatters";
+import { formatBRL, formatDateTime } from "../../src/utils/formatters";
 
 const TAB_SAFE_SCROLL_BOTTOM = 120;
 
@@ -62,7 +61,6 @@ export default function Orders() {
   const [remoteSnapshot, setRemoteSnapshot] = useState<AdsDashboardSnapshot | null>(null);
 
   const pendingApprovals = queue.listPendingApprovals().length;
-  const adsOrders = useMemo(() => getOrdersByType(queue.orders, "ads"), [queue.orders]);
   const adsDashboard = useMemo(
     () => calculateAdsDashboardMetrics(queue.orders, pendingApprovals),
     [pendingApprovals, queue.orders],
@@ -91,36 +89,73 @@ export default function Orders() {
     };
   }, []);
 
-  const runningCreatives = useMemo(
-    () => (remoteSnapshot?.creativesRunning?.length ? remoteSnapshot.creativesRunning : generateFallbackRunningCreatives(adsOrders)),
-    [adsOrders, remoteSnapshot],
-  );
+  const runningCreatives = useMemo(() => remoteSnapshot?.creativesRunning ?? [], [remoteSnapshot]);
 
   const kpi = useMemo(() => {
     const normalizedRemote =
-      remoteSnapshot && remoteSnapshot.updatedAt
+      remoteSnapshot
         ? {
             activeCampaigns: remoteSnapshot.activeCampaigns,
             monthlySpend: remoteSnapshot.monthlySpend,
             monthlyLeads: remoteSnapshot.monthlyLeads,
-            cpl: remoteSnapshot.cpl ?? 0,
+            cpl: remoteSnapshot.cpl,
+            previousMonthSpend: remoteSnapshot.previousMonthSpend,
+            previousMonthLeads: remoteSnapshot.previousMonthLeads,
+            previousMonthCpl: remoteSnapshot.previousMonthCpl,
             activeCreatives: remoteSnapshot.activeCreatives,
             updatedAt: remoteSnapshot.updatedAt,
+            dailySeries: remoteSnapshot.dailySeries,
+            stale: remoteSnapshot.stale,
           }
         : undefined;
     return buildKPIData(adsDashboard, runningCreatives, normalizedRemote);
   }, [adsDashboard, remoteSnapshot, runningCreatives]);
 
   const leads = Math.max(0, Math.round(kpi.monthlyLeads));
-  const previousLeads = Math.max(1, Math.round(leads * 0.84));
-  const diffLeads = Math.max(0, leads - previousLeads);
-  const growthPct = previousLeads > 0 ? Math.max(0, Math.round((diffLeads / previousLeads) * 100)) : 0;
+  const previousLeads = Math.max(0, Math.round(kpi.previousMonthLeads));
+  const { diffLeads, growthPct } = useMemo(() => buildGrowthData(leads, previousLeads), [leads, previousLeads]);
   const cpl = kpi.cpl ?? (leads > 0 ? kpi.monthlySpend / leads : 0);
+  const spendArrow = kpi.monthlySpend > kpi.previousMonthSpend ? "↑" : kpi.monthlySpend < kpi.previousMonthSpend ? "↓" : "→";
+  const growthArrow = diffLeads > 0 ? "↑" : diffLeads < 0 ? "↓" : "→";
+  const growthPctLabel = `${growthPct > 0 ? "+" : ""}${growthPct}%`;
 
-  const insightText =
-    cpl && cpl <= 50
-      ? "Seu custo está bom. Se aumentar R$ 20/dia, pode gerar +18 contatos."
-      : "O custo está acima da meta. Ajuste criativo + público para baixar CPL.";
+  const projection = useMemo(() => buildScaleProjection(kpi.monthlySpend, cpl > 0 ? cpl : null), [cpl, kpi.monthlySpend]);
+  const insight = useMemo(() => {
+    if (kpi.monthlySpend <= 0 && leads <= 0) {
+      return {
+        lead: "Ainda sem dados suficientes.",
+        body: "Assim que suas campanhas acumularem histórico, a Real libera recomendações automáticas aqui.",
+      };
+    }
+
+    if (cpl > 0 && cpl <= 50) {
+      if (projection.dailyIncrease > 0 && projection.extraLeads > 0) {
+        return {
+          lead: "Seu custo está saudável.",
+          body: `Se aumentar ${formatBRL(projection.dailyIncrease)}/dia, projeção de +${projection.extraLeads} contatos neste mês.`,
+        };
+      }
+      return {
+        lead: "Seu custo está saudável.",
+        body: "Mantenha o ritmo e continue testando criativos para crescer com consistência.",
+      };
+    }
+
+    const targetCpl = Math.max(20, Math.round(cpl * 0.85));
+    const projectedLeadsAtTarget = targetCpl > 0 ? Math.round(kpi.monthlySpend / targetCpl) : 0;
+    const gain = Math.max(0, projectedLeadsAtTarget - leads);
+    return {
+      lead: "Há espaço para otimizar.",
+      body: `Se reduzir o CPL para ${formatBRL(targetCpl)}, projeção de +${gain} contatos neste mês.`,
+    };
+  }, [cpl, kpi.monthlySpend, leads, projection.dailyIncrease, projection.extraLeads]);
+
+  const updatedLabel = useMemo(() => {
+    if (!kpi.updatedAt) return "Sem dados consolidados ainda.";
+    const parsed = new Date(kpi.updatedAt);
+    if (Number.isNaN(parsed.getTime())) return "Sem dados consolidados ainda.";
+    return `Atualizado em ${formatDateTime(parsed)}${kpi.stale ? " (cache)" : ""}`;
+  }, [kpi.stale, kpi.updatedAt]);
 
   if (!queue.planActive && queue.orders.length === 0) {
     return (
@@ -142,24 +177,27 @@ export default function Orders() {
         <Card style={styles.growthCard}>
           <SubTitle style={styles.growthTitle}>Seu crescimento</SubTitle>
           <View style={styles.headlineRow}>
-            <Title style={styles.leadsValue}>{leads || 82}</Title>
+            <Title style={styles.leadsValue}>{leads}</Title>
             <SubTitle style={styles.leadsLabel}>novos contatos</SubTitle>
           </View>
           <Body style={styles.monthText}>este mês</Body>
           <Body style={styles.cplText}>
-            <Text style={styles.cplStrong}>{formatBRL(cpl || 44)}</Text> por contato
+            <Text style={styles.cplStrong}>{formatBRL(cpl)}</Text> por contato
           </Body>
+          <Body style={styles.updatedAtText}>{updatedLabel}</Body>
 
           <View style={styles.graphWrap}>
-            <GrowthGraph />
+            <GrowthGraph series={kpi.dailySeries} />
           </View>
 
           <View style={styles.metricsStrip}>
             <Body style={styles.metricsItem}>
-              ↑ {diffLeads || 23} <Text style={styles.metricsStrong}>+{growthPct || 16}%</Text> este mês
+              {growthArrow} {diffLeads} <Text style={[styles.metricsStrong, growthPct < 0 ? styles.metricsStrongNegative : null]}>{growthPctLabel}</Text> este mês
             </Body>
             <Body style={styles.metricsDivider}>|</Body>
-            <Body style={styles.metricsItem}>↑ {formatBRL(kpi.monthlySpend || 1240)} este mês</Body>
+            <Body style={styles.metricsItem}>
+              {spendArrow} {formatBRL(kpi.monthlySpend)} este mês
+            </Body>
           </View>
         </Card>
 
@@ -185,8 +223,8 @@ export default function Orders() {
           <SubTitle>Sugestão do Real</SubTitle>
         </View>
         <Card style={styles.suggestionCard}>
-          <Body style={styles.suggestionLead}>Seu custo está bom.</Body>
-          <Body style={styles.suggestionBody}>{insightText}</Body>
+          <Body style={styles.suggestionLead}>{insight.lead}</Body>
+          <Body style={styles.suggestionBody}>{insight.body}</Body>
           <Button label="Aumentar alcance" onPress={() => router.push("/create/ads")} />
         </Card>
       </ScrollView>
@@ -194,26 +232,27 @@ export default function Orders() {
   );
 }
 
-function GrowthGraph() {
-  const points = [
-    { x: 10, y: 132 },
-    { x: 58, y: 122 },
-    { x: 102, y: 104 },
-    { x: 154, y: 97 },
-    { x: 206, y: 80 },
-    { x: 256, y: 58 },
-    { x: 302, y: 34 },
-  ];
+function GrowthGraph({ series }: { series: AdsDashboardDailyPoint[] }) {
+  const values = series.length ? series.map((item) => Math.max(0, item.leads)) : [0];
+  const maxValue = Math.max(...values, 1);
+  const left = 10;
+  const right = 302;
+  const bottom = 132;
+  const amplitude = 98;
 
-  const linePath = `M ${points[0]!.x} ${points[0]!.y}
-    C 34 128, 52 122, ${points[1]!.x} ${points[1]!.y}
-    C 78 118, 96 108, ${points[2]!.x} ${points[2]!.y}
-    C 126 98, 142 100, ${points[3]!.x} ${points[3]!.y}
-    C 172 94, 188 86, ${points[4]!.x} ${points[4]!.y}
-    C 228 72, 242 64, ${points[5]!.x} ${points[5]!.y}
-    C 276 50, 292 42, ${points[6]!.x} ${points[6]!.y}`;
+  const rawPoints = values.map((value, idx) => {
+    const ratio = values.length <= 1 ? 0 : idx / (values.length - 1);
+    return {
+      x: left + ratio * (right - left),
+      y: bottom - (value / maxValue) * amplitude,
+    };
+  });
 
-  const areaPath = `${linePath} L 302 152 L 10 152 Z`;
+  const points = rawPoints.length > 1 ? rawPoints : [{ x: left, y: bottom }, { x: right, y: bottom }];
+  const linePath = points.map((point, idx) => `${idx === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+  const areaPath = `${linePath} L ${right} 152 L ${left} 152 Z`;
+  const dotStep = Math.max(1, Math.floor(points.length / 5));
+  const dotPoints = points.filter((_, idx) => idx % dotStep === 0 || idx === points.length - 1);
 
   return (
     <Svg width="100%" height="100%" viewBox="0 0 312 152" preserveAspectRatio="none">
@@ -240,10 +279,10 @@ function GrowthGraph() {
       <Path d={linePath} stroke="url(#lineGlow)" strokeWidth="4.5" fill="none" strokeLinecap="round" />
       <Path d={linePath} stroke="rgba(213,255,144,0.24)" strokeWidth="10" fill="none" strokeLinecap="round" />
 
-      {points.slice(2).map((point) => (
+      {dotPoints.map((point) => (
         <Circle key={`dot-glow-${point.x}`} cx={point.x} cy={point.y} r="9" fill="rgba(187,245,110,0.22)" />
       ))}
-      {points.slice(2).map((point) => (
+      {dotPoints.map((point) => (
         <Circle key={`dot-${point.x}`} cx={point.x} cy={point.y} r="5.4" fill="#CBFA8B" />
       ))}
     </Svg>
@@ -294,6 +333,12 @@ const styles = StyleSheet.create({
     fontSize: 19,
     lineHeight: 24,
   },
+  updatedAtText: {
+    marginTop: 2,
+    color: "rgba(237,237,238,0.62)",
+    fontSize: 13,
+    lineHeight: 18,
+  },
   cplStrong: {
     fontFamily: realTheme.fonts.bodyBold,
     color: realTheme.colors.text,
@@ -325,6 +370,9 @@ const styles = StyleSheet.create({
   metricsStrong: {
     color: "#97E768",
     fontFamily: realTheme.fonts.bodyBold,
+  },
+  metricsStrongNegative: {
+    color: "#F2B35E",
   },
   metricsDivider: {
     color: "rgba(237,237,238,0.3)",

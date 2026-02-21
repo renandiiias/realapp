@@ -24,6 +24,7 @@ const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
 const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace(/^act_/, "");
 const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
 const META_API_BASE = "https://graph.facebook.com";
+const SITE_BUILDER_API_BASE_URL = (process.env.SITE_BUILDER_API_BASE_URL || "http://localhost:3340").replace(/\/+$/, "");
 
 if (!DATABASE_URL) throw new Error("DATABASE_URL é obrigatória");
 if (!JWT_SECRET || JWT_SECRET.length < 24) throw new Error("JWT_SECRET inválida");
@@ -132,6 +133,45 @@ const adsPublicationSchema = z.object({
   metaCreativeId: z.string().min(2).max(120).optional(),
   status: z.string().min(2).max(60),
   rawResponse: z.any().optional(),
+});
+
+const siteAutobuildSchema = z.object({
+  prompt: z.string().min(4).max(2000),
+  context: z.record(z.any()).optional(),
+  currentBuilder: z.record(z.any()).optional(),
+  forceRegenerate: z.boolean().optional(),
+});
+
+const liveSiteGenerateSchema = z.object({
+  prompt: z.string().min(4).max(3000),
+  previous: z
+    .object({
+      slug: z.string().max(120).optional(),
+      code: z
+        .object({
+          html: z.string().max(250000).optional(),
+          css: z.string().max(120000).optional(),
+          js: z.string().max(120000).optional(),
+        })
+        .optional(),
+      builderSpec: z.record(z.any()).optional(),
+    })
+    .optional(),
+});
+
+const liveSitePublishSchema = z.object({
+  slug: z.string().min(2).max(120),
+  builderSpec: z.record(z.any()),
+});
+
+const sitePublicationSchema = z.object({
+  stage: z.enum(["draft", "building", "preview_ready", "awaiting_approval", "publishing", "published", "failed"]),
+  slug: z.string().max(120).optional(),
+  previewUrl: z.string().url().optional(),
+  publicUrl: z.string().url().optional(),
+  retries: z.number().int().min(0).max(10).optional(),
+  lastError: z.string().max(2000).optional(),
+  metadata: z.any().optional(),
 });
 
 function parseBearerToken(req) {
@@ -265,10 +305,65 @@ function mapAdsPublication(row) {
   };
 }
 
+function mapSitePublication(row) {
+  if (!row) return null;
+  return {
+    orderId: row.order_id,
+    customerId: row.customer_id,
+    stage: row.stage || "draft",
+    slug: row.slug || null,
+    previewUrl: row.preview_url || null,
+    publicUrl: row.public_url || null,
+    retries: Number(row.retries || 0),
+    lastError: row.last_error || null,
+    metadata: row.metadata || {},
+    updatedAt: row.updated_at ? row.updated_at.toISOString() : null,
+  };
+}
+
+function safeJson(raw) {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { raw };
+  }
+}
+
+async function siteBuilderApi(apiPath, payload) {
+  const response = await fetch(`${SITE_BUILDER_API_BASE_URL}${apiPath}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload || {}),
+  });
+  const raw = await response.text();
+  const data = safeJson(raw);
+  if (!response.ok) {
+    const message = typeof data.error === "string" ? data.error : raw || "site_builder_unavailable";
+    throw new Error(`site_builder_http_${response.status}:${message}`);
+  }
+  return data;
+}
+
 function safeBaseName(input) {
   const raw = String(input || "").trim() || "asset.bin";
   const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
   return cleaned || "asset.bin";
+}
+
+function toLiveSiteSlug(customerId, input) {
+  const base = String(input || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const customerPart = String(customerId || "").slice(0, 8).toLowerCase();
+  if (base) return `${base}-${customerPart}`;
+  return `site-${customerPart}-${Date.now().toString(36)}`;
 }
 
 function normalizeMimeType(mimeType, fileName) {
@@ -306,6 +401,355 @@ function extractLeadActions(actions) {
   }, 0);
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
+function toIsoDateUTC(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeMetaStatus(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function mapCreativeStatus(status) {
+  const normalized = normalizeMetaStatus(status);
+  if (normalized === "PAUSED" || normalized === "CAMPAIGN_PAUSED" || normalized === "ADSET_PAUSED") return "paused";
+  if (normalized === "LEARNING" || normalized === "IN_PROCESS") return "learning";
+  if (normalized === "ACTIVE") return "active";
+  return "ended";
+}
+
+function isActiveStatus(status) {
+  return normalizeMetaStatus(status) === "ACTIVE";
+}
+
+function uniqueNonEmpty(values) {
+  return Array.from(new Set(values.map((v) => String(v || "").trim()).filter(Boolean)));
+}
+
+function toDailySeriesRow(input) {
+  const date = String(input?.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return {
+    date,
+    spend: toFiniteNumber(input.spend),
+    leads: toFiniteNumber(input.leads),
+  };
+}
+
+function buildZeroDailySeries(now = new Date()) {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const today = now.getUTCDate();
+  const list = [];
+  for (let day = 1; day <= today; day += 1) {
+    list.push({
+      date: toIsoDateUTC(new Date(Date.UTC(year, month, day))),
+      spend: 0,
+      leads: 0,
+    });
+  }
+  return list;
+}
+
+function withDashboardDefaults(snapshot, { stale = false } = {}) {
+  const now = new Date();
+  const input = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const parsedDaily = Array.isArray(input.dailySeries) ? input.dailySeries.map(toDailySeriesRow).filter(Boolean) : [];
+  const normalizedDaily = parsedDaily.length > 0 ? parsedDaily : buildZeroDailySeries(now);
+
+  return {
+    source: "remote",
+    scope: "customer_campaigns",
+    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : now.toISOString(),
+    monthlySpend: toFiniteNumber(input.monthlySpend),
+    monthlyLeads: toFiniteNumber(input.monthlyLeads),
+    cpl: typeof input.cpl === "number" && Number.isFinite(input.cpl) ? input.cpl : null,
+    previousMonthSpend: toFiniteNumber(input.previousMonthSpend),
+    previousMonthLeads: toFiniteNumber(input.previousMonthLeads),
+    previousMonthCpl: typeof input.previousMonthCpl === "number" && Number.isFinite(input.previousMonthCpl) ? input.previousMonthCpl : null,
+    activeCampaigns: toFiniteNumber(input.activeCampaigns),
+    activeCreatives: toFiniteNumber(input.activeCreatives),
+    creativesRunning: Array.isArray(input.creativesRunning)
+      ? input.creativesRunning
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            id: String(item.id || randomUUID()),
+            name: String(item.name || "Criativo"),
+            campaignName: String(item.campaignName || "Campanha"),
+            adSetName: String(item.adSetName || ""),
+            status: mapCreativeStatus(item.status),
+            spend: toFiniteNumber(item.spend),
+            leads: toFiniteNumber(item.leads),
+            updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : undefined,
+          }))
+      : [],
+    dailySeries: normalizedDaily,
+    stale: Boolean(stale || input.stale),
+  };
+}
+
+function buildDashboardFromPublications(publications, { stale = false } = {}) {
+  const nowIso = new Date().toISOString();
+  const campaignIds = uniqueNonEmpty(publications.map((row) => row.meta_campaign_id));
+  const adIds = uniqueNonEmpty(publications.map((row) => row.meta_ad_id));
+
+  const campaignStatusMap = new Map();
+  const adStatusMap = new Map();
+  for (const row of publications) {
+    const campaignId = String(row.meta_campaign_id || "").trim();
+    const adId = String(row.meta_ad_id || "").trim();
+    const status = normalizeMetaStatus(row.status);
+    if (campaignId && !campaignStatusMap.has(campaignId)) campaignStatusMap.set(campaignId, status);
+    if (adId && !adStatusMap.has(adId)) adStatusMap.set(adId, status);
+  }
+
+  const activeCampaigns = campaignIds.filter((id) => isActiveStatus(campaignStatusMap.get(id))).length;
+  const activeCreatives = adIds.filter((id) => isActiveStatus(adStatusMap.get(id))).length;
+
+  const creativesRunning = publications
+    .filter((row) => String(row.meta_ad_id || "").trim())
+    .slice(0, 20)
+    .map((row, index) => ({
+      id: String(row.meta_ad_id || `publication-${index + 1}`),
+      name: row.title ? `${String(row.title).slice(0, 52)} • Criativo` : `Criativo ${index + 1}`,
+      campaignName: row.title ? String(row.title).slice(0, 52) : "Campanha",
+      status: mapCreativeStatus(row.status),
+      spend: 0,
+      leads: 0,
+      updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : nowIso,
+    }));
+
+  return withDashboardDefaults(
+    {
+      updatedAt: nowIso,
+      monthlySpend: 0,
+      monthlyLeads: 0,
+      cpl: null,
+      previousMonthSpend: 0,
+      previousMonthLeads: 0,
+      previousMonthCpl: null,
+      activeCampaigns,
+      activeCreatives,
+      creativesRunning,
+      dailySeries: buildZeroDailySeries(),
+    },
+    { stale },
+  );
+}
+
+async function fetchInsightsByCampaignIds(campaignIds, { datePreset, timeIncrement } = {}) {
+  if (!campaignIds.length) return [];
+  const fields = "campaign_id,campaign_name,adset_name,ad_id,ad_name,spend,actions,date_start";
+  const settled = await Promise.allSettled(
+    campaignIds.map((campaignId) =>
+      metaGet(`${campaignId}/insights`, {
+        date_preset: datePreset,
+        level: "ad",
+        fields,
+        limit: "500",
+        ...(timeIncrement ? { time_increment: String(timeIncrement) } : {}),
+      }),
+    ),
+  );
+
+  const rows = [];
+  let successCount = 0;
+  for (const item of settled) {
+    if (item.status !== "fulfilled") continue;
+    successCount += 1;
+    if (Array.isArray(item.value?.data)) rows.push(...item.value.data);
+  }
+  if (successCount === 0) {
+    throw new Error(`meta_insights_${datePreset}_failed`);
+  }
+  return rows;
+}
+
+async function fetchMetaStatuses(ids, { fields = "id,effective_status" } = {}) {
+  const uniqueIds = uniqueNonEmpty(ids);
+  if (!uniqueIds.length) return { statuses: new Map(), successCount: 0 };
+
+  const settled = await Promise.allSettled(uniqueIds.map((id) => metaGet(id, { fields })));
+  const statuses = new Map();
+  let successCount = 0;
+
+  for (const item of settled) {
+    if (item.status !== "fulfilled") continue;
+    const row = item.value || {};
+    const id = String(row.id || "").trim();
+    if (!id) continue;
+    statuses.set(id, normalizeMetaStatus(row.effective_status));
+    successCount += 1;
+  }
+
+  return { statuses, successCount };
+}
+
+function aggregateTotals(rows) {
+  let spend = 0;
+  let leads = 0;
+  for (const row of rows) {
+    spend += toFiniteNumber(row?.spend);
+    leads += extractLeadActions(row?.actions);
+  }
+  return {
+    spend,
+    leads,
+    cpl: leads > 0 ? spend / leads : null,
+  };
+}
+
+function buildDailySeriesFromInsights(rows) {
+  const base = buildZeroDailySeries();
+  const byDate = new Map(base.map((item) => [item.date, { ...item }]));
+
+  for (const row of rows) {
+    const date = String(row?.date_start || "").trim();
+    if (!byDate.has(date)) continue;
+    const prev = byDate.get(date);
+    byDate.set(date, {
+      date,
+      spend: prev.spend + toFiniteNumber(row?.spend),
+      leads: prev.leads + extractLeadActions(row?.actions),
+    });
+  }
+
+  return base.map((item) => byDate.get(item.date) || item);
+}
+
+function buildCreativeMetricsMap(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const id = String(row?.ad_id || "").trim();
+    if (!id) continue;
+    const prev = map.get(id) || {
+      id,
+      name: String(row?.ad_name || "Criativo"),
+      campaignName: String(row?.campaign_name || "Campanha"),
+      adSetName: String(row?.adset_name || ""),
+      spend: 0,
+      leads: 0,
+    };
+    prev.spend += toFiniteNumber(row?.spend);
+    prev.leads += extractLeadActions(row?.actions);
+    if (!prev.name && row?.ad_name) prev.name = String(row.ad_name);
+    if (!prev.campaignName && row?.campaign_name) prev.campaignName = String(row.campaign_name);
+    if (!prev.adSetName && row?.adset_name) prev.adSetName = String(row.adset_name);
+    map.set(id, prev);
+  }
+  return map;
+}
+
+function statusFromMaps(id, liveMap, savedMap) {
+  const live = liveMap.get(id);
+  if (live) return live;
+  const saved = savedMap.get(id);
+  if (saved) return saved;
+  return "";
+}
+
+async function buildDashboardSnapshotForCustomer(client, customerId) {
+  const publications = await client.query(
+    `select ap.order_id, ap.meta_campaign_id, ap.meta_ad_id, ap.status, ap.updated_at, o.title
+     from ads_publications ap
+     join orders o on o.id = ap.order_id
+     where ap.customer_id = $1
+     order by ap.updated_at desc`,
+    [customerId],
+  );
+
+  const rows = publications.rows;
+  if (!rows.length) {
+    return buildDashboardFromPublications([], { stale: false });
+  }
+
+  const campaignIds = uniqueNonEmpty(rows.map((row) => row.meta_campaign_id));
+  const publicationAdIds = uniqueNonEmpty(rows.map((row) => row.meta_ad_id));
+
+  if (!isMetaConfigured() || !campaignIds.length) {
+    return buildDashboardFromPublications(rows, { stale: false });
+  }
+
+  const thisMonthRows = await fetchInsightsByCampaignIds(campaignIds, { datePreset: "this_month" });
+  const lastMonthRows = await fetchInsightsByCampaignIds(campaignIds, { datePreset: "last_month" });
+  const dailyRows = await fetchInsightsByCampaignIds(campaignIds, { datePreset: "this_month", timeIncrement: 1 });
+
+  const thisMonthTotals = aggregateTotals(thisMonthRows);
+  const previousMonthTotals = aggregateTotals(lastMonthRows);
+  const dailySeries = buildDailySeriesFromInsights(dailyRows);
+  const metricsByAdId = buildCreativeMetricsMap(thisMonthRows);
+  const metricsAdIds = Array.from(metricsByAdId.keys());
+
+  const { statuses: liveCampaignStatusMap } = await fetchMetaStatuses(campaignIds, { fields: "id,effective_status" });
+  const adIdsForStatus = uniqueNonEmpty([...publicationAdIds, ...metricsAdIds]);
+  const { statuses: liveAdStatusMap } = await fetchMetaStatuses(adIdsForStatus, { fields: "id,effective_status" });
+
+  const savedCampaignStatusMap = new Map();
+  const savedAdStatusMap = new Map();
+  for (const row of rows) {
+    const campaignId = String(row.meta_campaign_id || "").trim();
+    const adId = String(row.meta_ad_id || "").trim();
+    const status = normalizeMetaStatus(row.status);
+    if (campaignId && !savedCampaignStatusMap.has(campaignId)) savedCampaignStatusMap.set(campaignId, status);
+    if (adId && !savedAdStatusMap.has(adId)) savedAdStatusMap.set(adId, status);
+  }
+
+  const activeCampaigns = campaignIds.filter((id) => isActiveStatus(statusFromMaps(id, liveCampaignStatusMap, savedCampaignStatusMap))).length;
+  const activeCreatives = adIdsForStatus.filter((id) => isActiveStatus(statusFromMaps(id, liveAdStatusMap, savedAdStatusMap))).length;
+
+  const publicationTitleByAdId = new Map(
+    rows
+      .filter((row) => String(row.meta_ad_id || "").trim())
+      .map((row) => [String(row.meta_ad_id).trim(), String(row.title || "").trim()]),
+  );
+
+  const creativesRunning = adIdsForStatus
+    .map((adId, index) => {
+      const metrics = metricsByAdId.get(adId);
+      const statusRaw = statusFromMaps(adId, liveAdStatusMap, savedAdStatusMap);
+      const status = mapCreativeStatus(statusRaw || "ACTIVE");
+      if (status === "ended") return null;
+      const titleFallback = publicationTitleByAdId.get(adId);
+      return {
+        id: adId,
+        name: metrics?.name || (titleFallback ? `${titleFallback.slice(0, 52)} • Criativo` : `Criativo ${index + 1}`),
+        campaignName: metrics?.campaignName || titleFallback || "Campanha",
+        adSetName: metrics?.adSetName || "",
+        status,
+        spend: toFiniteNumber(metrics?.spend),
+        leads: toFiniteNumber(metrics?.leads),
+        updatedAt: new Date().toISOString(),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+
+  return withDashboardDefaults(
+    {
+      updatedAt: new Date().toISOString(),
+      monthlySpend: thisMonthTotals.spend,
+      monthlyLeads: thisMonthTotals.leads,
+      cpl: thisMonthTotals.cpl,
+      previousMonthSpend: previousMonthTotals.spend,
+      previousMonthLeads: previousMonthTotals.leads,
+      previousMonthCpl: previousMonthTotals.cpl,
+      activeCampaigns,
+      activeCreatives,
+      creativesRunning,
+      dailySeries,
+    },
+    { stale: false },
+  );
+}
+
 function isMetaConfigured() {
   return Boolean(META_ACCESS_TOKEN && /^\d+$/.test(META_AD_ACCOUNT_ID));
 }
@@ -338,58 +782,11 @@ async function metaGet(apiPath, params = {}) {
   return payload;
 }
 
-async function buildMetaDashboardSnapshot() {
-  const [accountInsights, adInsights] = await Promise.all([
-    metaGet(`act_${META_AD_ACCOUNT_ID}/insights`, {
-      date_preset: "this_month",
-      level: "account",
-      fields: "spend,actions",
-      limit: "1",
-    }),
-    metaGet(`act_${META_AD_ACCOUNT_ID}/insights`, {
-      date_preset: "this_month",
-      level: "ad",
-      fields: "ad_id,ad_name,campaign_name,adset_name,spend,actions",
-      limit: "100",
-    }),
-  ]);
-
-  const accountRow = Array.isArray(accountInsights.data) && accountInsights.data[0] ? accountInsights.data[0] : null;
-  const adRows = Array.isArray(adInsights.data) ? adInsights.data : [];
-  const monthlySpend = Number(accountRow?.spend || 0);
-  const monthlyLeads =
-    accountRow && Array.isArray(accountRow.actions)
-      ? extractLeadActions(accountRow.actions)
-      : adRows.reduce((acc, row) => acc + extractLeadActions(row.actions), 0);
-  const cpl = monthlyLeads > 0 ? monthlySpend / monthlyLeads : null;
-  const activeCampaigns = new Set(adRows.map((row) => String(row.campaign_name || "").trim()).filter(Boolean)).size;
-
-  return {
-    source: "remote",
-    updatedAt: new Date().toISOString(),
-    monthlySpend,
-    monthlyLeads,
-    cpl,
-    activeCampaigns,
-    activeCreatives: adRows.length,
-    creativesRunning: adRows.slice(0, 20).map((row) => ({
-      id: String(row.ad_id || randomUUID()),
-      name: String(row.ad_name || "Criativo"),
-      campaignName: String(row.campaign_name || "Campanha"),
-      adSetName: String(row.adset_name || ""),
-      status: "active",
-      spend: Number(row.spend || 0),
-      leads: extractLeadActions(row.actions),
-      updatedAt: new Date().toISOString(),
-    })),
-  };
-}
-
 async function getOrderDetail(client, orderId) {
   const orderRes = await client.query(`select * from orders where id = $1`, [orderId]);
   if (orderRes.rowCount === 0) return null;
 
-  const [eventsRes, deliverablesRes, approvalsRes, assetsRes, publicationRes] = await Promise.all([
+  const [eventsRes, deliverablesRes, approvalsRes, assetsRes, publicationRes, sitePublicationRes] = await Promise.all([
     client.query(`select * from order_events where order_id = $1 order by ts asc`, [orderId]),
     client.query(`select * from deliverables where order_id = $1 order by updated_at desc`, [orderId]),
     client.query(
@@ -401,6 +798,7 @@ async function getOrderDetail(client, orderId) {
     ),
     client.query(`select * from order_assets where order_id = $1 order by created_at desc`, [orderId]),
     client.query(`select * from ads_publications where order_id = $1`, [orderId]),
+    client.query(`select * from site_publications where order_id = $1`, [orderId]),
   ]);
 
   return {
@@ -410,6 +808,7 @@ async function getOrderDetail(client, orderId) {
     approvals: approvalsRes.rows.map(mapApproval),
     assets: assetsRes.rows.map(mapOrderAsset),
     adsPublication: publicationRes.rowCount > 0 ? mapAdsPublication(publicationRes.rows[0]) : null,
+    sitePublication: sitePublicationRes.rowCount > 0 ? mapSitePublication(sitePublicationRes.rows[0]) : null,
   };
 }
 
@@ -467,6 +866,86 @@ app.post("/v1/entitlements/me", async (req, res) => {
     return res.json({ planActive: parsed.data.planActive });
   } finally {
     client.release();
+  }
+});
+
+app.post("/v1/site/autobuild", async (req, res) => {
+  const parsed = siteAutobuildSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  try {
+    const result = await siteBuilderApi("/v1/autobuild", {
+      ...parsed.data,
+      context: {
+        ...(parsed.data.context || {}),
+        customerId: req.user.id,
+      },
+    });
+    return res.json(result);
+  } catch (error) {
+    log("error", "site_autobuild_failed", { customerId: req.user.id, error: String(error) });
+    return res.status(502).json({ error: "Falha ao gerar estrutura automática do site." });
+  }
+});
+
+app.post("/v1/site/live/generate", async (req, res) => {
+  const parsed = liveSiteGenerateSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  try {
+    const { prompt, previous } = parsed.data;
+    const generation = await siteBuilderApi("/v1/code/generate", {
+      prompt,
+      previous: previous?.code || undefined,
+      context: { customerId: req.user.id },
+    });
+    if (!generation?.builderSpec || typeof generation.builderSpec !== "object") {
+      return res.status(502).json({ error: "Resposta inválida do builder." });
+    }
+
+    const slug = toLiveSiteSlug(req.user.id, previous?.slug || generation.builderSpec.businessName || "site");
+    const preview = await siteBuilderApi("/v1/publish/preview", {
+      orderId: `live-${req.user.id}-${Date.now()}`,
+      customerId: req.user.id,
+      slug,
+      builderSpec: generation.builderSpec,
+    });
+
+    return res.json({
+      slug: String(preview.slug || slug),
+      previewUrl: String(preview.url || ""),
+      publicUrl: null,
+      builderSpec: generation.builderSpec,
+      code: generation.code || null,
+      meta: generation.meta || {},
+    });
+  } catch (error) {
+    log("error", "site_live_generate_failed", { customerId: req.user.id, error: String(error) });
+    return res.status(502).json({ error: "Falha ao gerar preview do site." });
+  }
+});
+
+app.post("/v1/site/live/publish", async (req, res) => {
+  const parsed = liveSitePublishSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  try {
+    const { slug, builderSpec } = parsed.data;
+    const published = await siteBuilderApi("/v1/publish/final", {
+      orderId: `live-${req.user.id}-${Date.now()}`,
+      customerId: req.user.id,
+      slug: toLiveSiteSlug(req.user.id, slug),
+      builderSpec,
+    });
+
+    return res.json({
+      slug: String(published.slug || slug),
+      publicUrl: String(published.url || ""),
+      stage: "published",
+    });
+  } catch (error) {
+    log("error", "site_live_publish_failed", { customerId: req.user.id, error: String(error) });
+    return res.status(502).json({ error: "Falha ao publicar site final." });
   }
 });
 
@@ -701,38 +1180,39 @@ app.get("/v1/ads/dashboard", async (req, res) => {
        where customer_id = $1`,
       [customerId],
     );
+    const cachedSnapshot =
+      cached.rowCount > 0 ? withDashboardDefaults(cached.rows[0].snapshot || {}, { stale: false }) : null;
+
     if (cached.rowCount > 0) {
       const updatedAt = cached.rows[0].updated_at ? cached.rows[0].updated_at.getTime() : 0;
       if (Date.now() - updatedAt <= ADS_DASHBOARD_CACHE_TTL_SECONDS * 1000) {
-        return res.json(cached.rows[0].snapshot || {});
+        return res.json(cachedSnapshot);
       }
     }
 
-    let snapshot;
-    if (isMetaConfigured()) {
-      snapshot = await buildMetaDashboardSnapshot();
-    } else {
-      const fallback = await client.query(
-        `select status, count(*) as total
-         from ads_publications
-         where customer_id = $1
-         group by status`,
-        [customerId],
-      );
-      const totalActive = fallback.rows.reduce((acc, row) => {
-        if (String(row.status || "").toUpperCase() === "ACTIVE") return acc + Number(row.total || 0);
-        return acc;
-      }, 0);
-      snapshot = {
-        source: "remote",
-        updatedAt: new Date().toISOString(),
-        monthlySpend: 0,
-        monthlyLeads: 0,
-        cpl: null,
-        activeCampaigns: totalActive,
-        activeCreatives: totalActive,
-        creativesRunning: [],
-      };
+    let snapshot = null;
+    try {
+      snapshot = withDashboardDefaults(await buildDashboardSnapshotForCustomer(client, customerId), { stale: false });
+    } catch (refreshError) {
+      log("warn", "ads_dashboard_refresh_failed", { customerId, error: String(refreshError) });
+      if (cachedSnapshot) {
+        return res.json(withDashboardDefaults(cachedSnapshot, { stale: true }));
+      }
+
+      try {
+        const fallbackPublications = await client.query(
+          `select ap.order_id, ap.meta_campaign_id, ap.meta_ad_id, ap.status, ap.updated_at, o.title
+           from ads_publications ap
+           join orders o on o.id = ap.order_id
+           where ap.customer_id = $1
+           order by ap.updated_at desc`,
+          [customerId],
+        );
+        snapshot = buildDashboardFromPublications(fallbackPublications.rows, { stale: true });
+      } catch (fallbackError) {
+        log("error", "ads_dashboard_fallback_failed", { customerId, error: String(fallbackError) });
+        snapshot = withDashboardDefaults({}, { stale: true });
+      }
     }
 
     await client.query(
@@ -745,7 +1225,7 @@ app.get("/v1/ads/dashboard", async (req, res) => {
     return res.json(snapshot);
   } catch (error) {
     log("error", "ads_dashboard_failed", { customerId, error: String(error) });
-    return res.status(500).json({ error: "Falha ao carregar dashboard de anúncios." });
+    return res.json(withDashboardDefaults({}, { stale: true }));
   } finally {
     client.release();
   }
@@ -1089,7 +1569,8 @@ app.post("/v1/ops/orders/:id/deliverables", requireRole(["worker", "ops"]), asyn
         await client.query(
           `insert into approvals (deliverable_id, status, feedback)
            values ($1, 'pending', '')
-           on conflict (deliverable_id) do nothing`,
+           on conflict (deliverable_id)
+           do update set status = 'pending', feedback = '', updated_at = now()`,
           [persisted.id],
         );
       }
@@ -1162,12 +1643,75 @@ app.post("/v1/ops/orders/:id/ads-publication", requireRole(["worker", "ops"]), a
       message: `Publicação Meta atualizada (${parsed.data.status}).`,
     });
 
+    await client.query(`delete from ads_dashboard_snapshots where customer_id = $1`, [row.customer_id]);
+
     await client.query("commit");
     return res.json({ ok: true });
   } catch (error) {
     await client.query("rollback");
     log("error", "ops_ads_publication_failed", { orderId, error: String(error) });
     return res.status(500).json({ error: "Falha ao salvar publicação de anúncio." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/ops/orders/:id/site-publication", requireRole(["worker", "ops"]), async (req, res) => {
+  const parsed = sitePublicationSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  const orderId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const order = await client.query(`select id, customer_id from orders where id = $1 for update`, [orderId]);
+    if (order.rowCount === 0) {
+      await client.query("rollback");
+      return res.status(404).json({ error: "Pedido não encontrado." });
+    }
+
+    const row = order.rows[0];
+    await client.query(
+      `insert into site_publications (
+        order_id, customer_id, stage, slug, preview_url, public_url, retries, last_error, metadata
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+      on conflict (order_id)
+      do update set
+        customer_id = excluded.customer_id,
+        stage = excluded.stage,
+        slug = excluded.slug,
+        preview_url = excluded.preview_url,
+        public_url = excluded.public_url,
+        retries = excluded.retries,
+        last_error = excluded.last_error,
+        metadata = excluded.metadata,
+        updated_at = now()`,
+      [
+        orderId,
+        row.customer_id,
+        parsed.data.stage,
+        parsed.data.slug || null,
+        parsed.data.previewUrl || null,
+        parsed.data.publicUrl || null,
+        typeof parsed.data.retries === "number" ? parsed.data.retries : 0,
+        parsed.data.lastError || null,
+        JSON.stringify(parsed.data.metadata || {}),
+      ],
+    );
+
+    await appendEvent(client, {
+      orderId,
+      actor: req.role === "ops" ? "ops" : "codex",
+      message: `Publicação de site atualizada (${parsed.data.stage}).`,
+    });
+
+    await client.query("commit");
+    return res.json({ ok: true });
+  } catch (error) {
+    await client.query("rollback");
+    log("error", "ops_site_publication_failed", { orderId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao salvar publicação de site." });
   } finally {
     client.release();
   }

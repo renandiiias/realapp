@@ -1,4 +1,3 @@
-import { router } from "expo-router";
 import { ResizeMode, Video } from "expo-av";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
@@ -6,12 +5,12 @@ import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, View } from "react-native";
-import type { JsonObject } from "../../src/queue/types";
-import { useQueue } from "../../src/queue/QueueProvider";
-import { fetchTemplates, fetchVideo, getDownloadUrl, submitCaptionJob, type CaptionTemplate, type VideoItem } from "../../src/services/videoEditorApi";
+import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
+import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
+import { Chip } from "../../src/ui/components/Chip";
 import { Field } from "../../src/ui/components/Field";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
@@ -55,52 +54,37 @@ function isIosPhotos3164(error: unknown): boolean {
   return /PHPhotosErrorDomain/i.test(raw) && /3164/.test(raw);
 }
 
-function getFriendlyError(raw: string): string {
-  const lowered = raw.toLowerCase();
-  if (lowered.includes("9:16") || lowered.includes("vertical")) {
-    return "Este video nao esta em 9:16. Envie um video vertical (ex.: 1080x1920).";
-  }
-  if (lowered.includes("50 mb") || lowered.includes("50mb") || lowered.includes("limite")) {
-    return "Arquivo grande detectado. Vamos comprimir automaticamente e seguir com a edicao.";
-  }
-  if (lowered.includes("formato") || lowered.includes("mp4") || lowered.includes("mov")) {
-    return "Formato invalido. Envie somente arquivos MP4 ou MOV.";
-  }
-  return raw;
-}
-
 function hasAcceptedExtension(name: string): boolean {
   const lowered = name.toLowerCase();
   return ACCEPTED_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
-function inferPhase(video: VideoItem | null): "upload" | "queued" | "processing" | "complete" | "failed" {
-  if (!video) return "upload";
-  if (video.status === "QUEUED") return "queued";
-  if (video.status === "PROCESSING") return "processing";
-  if (video.status === "COMPLETE") return "complete";
+function modeDescription(mode: AiEditMode): string {
+  if (mode === "cut") {
+    return "A IA remove pausas e entrega um video curto e objetivo.";
+  }
+  return "A IA faz os cortes e aplica legenda automatica em portugues.";
+}
+
+function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver" | "done" | "failed" {
+  if (!video) return "prepare";
+  if (video.status === "QUEUED") return "prepare";
+  if (video.status === "PROCESSING") {
+    if ((video.progress || 0) >= 0.85) return "deliver";
+    return "edit";
+  }
+  if (video.status === "COMPLETE") return "done";
   return "failed";
 }
 
-function progressLabel(video: VideoItem | null): string {
-  if (!video) return "Aguardando envio";
-  if (video.status === "QUEUED") return "Na fila";
-  if (video.status === "PROCESSING") return `Processando (${Math.round(video.progress * 100)}%)`;
-  if (video.status === "COMPLETE") return "Pronto para baixar";
-  return video.error?.message || "Falha ao processar";
-}
-
 export default function VideoEditorCreateScreen() {
-  const queue = useQueue();
   const [picked, setPicked] = useState<PickedVideo | null>(null);
+  const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
   const [stylePrompt, setStylePrompt] = useState("");
-
-  const [templates, setTemplates] = useState<CaptionTemplate[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState("");
-  const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   const [video, setVideo] = useState<VideoItem | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [compatibilityNotice, setCompatibilityNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
@@ -112,35 +96,6 @@ export default function VideoEditorCreateScreen() {
   const hasRemoteEditor = Boolean(videoApiBase);
 
   useEffect(() => {
-    if (!hasRemoteEditor || !videoApiBase) return;
-    let mounted = true;
-    setLoadingTemplates(true);
-    setError(null);
-
-    void fetchTemplates(videoApiBase)
-      .then((data) => {
-        if (!mounted) return;
-        setTemplates(data);
-        if (data.length > 0) {
-          setSelectedTemplate((current) => (current ? current : data[0]!.id));
-        }
-      })
-      .catch((templateError) => {
-        if (!mounted) return;
-        const message = templateError instanceof Error ? templateError.message : "Nao foi possivel carregar templates.";
-        setError(getFriendlyError(message));
-      })
-      .finally(() => {
-        if (!mounted) return;
-        setLoadingTemplates(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, [hasRemoteEditor, videoApiBase]);
-
-  useEffect(() => {
     if (!hasRemoteEditor || !video || !videoApiBase) return;
     if (video.status !== "QUEUED" && video.status !== "PROCESSING") return;
 
@@ -149,30 +104,34 @@ export default function VideoEditorCreateScreen() {
         .then((current) => {
           setVideo(current);
         })
-        .catch(() => {
-          setError("Nao foi possivel atualizar o progresso.");
+        .catch((refreshError) => {
+          const message = refreshError instanceof Error ? refreshError.message : "Nao foi possivel atualizar o status.";
+          setError(humanizeVideoError(message));
         });
     }, 2000);
 
     return () => clearInterval(timer);
   }, [hasRemoteEditor, video, videoApiBase]);
 
-  const canSubmit = Boolean(picked) && !submitting;
+  const canSubmit = Boolean(picked) && !submitting && hasRemoteEditor;
   const runSafe = (task: () => Promise<void>) => {
     void task().catch((taskError) => {
       setError(pickerErrorMessage(taskError));
     });
   };
 
-  const applyPicked = (asset: {
-    uri: string;
-    fileName?: string | null;
-    mimeType?: string | null;
-    duration?: number | null;
-    fileSize?: number | null;
-    width?: number;
-    height?: number;
-  }, source: "gallery" | "camera") => {
+  const applyPicked = (
+    asset: {
+      uri: string;
+      fileName?: string | null;
+      mimeType?: string | null;
+      duration?: number | null;
+      fileSize?: number | null;
+      width?: number;
+      height?: number;
+    },
+    source: "gallery" | "camera",
+  ) => {
     const durationSeconds = normalizeDuration(asset.duration);
     if (durationSeconds && durationSeconds > MAX_VIDEO_SECONDS) {
       setError("Use um video de ate 5 minutos.");
@@ -199,6 +158,7 @@ export default function VideoEditorCreateScreen() {
       height: asset.height,
     });
     setVideo(null);
+    setCompatibilityNotice(null);
     setError(null);
   };
 
@@ -270,53 +230,39 @@ export default function VideoEditorCreateScreen() {
     }
   };
 
-  const submitFallbackOrder = async () => {
-    if (!picked) return;
-    const payload: JsonObject = {
-      source: picked.source,
-      originalFileName: picked.name,
-      durationSeconds: Math.round((picked.durationSeconds || 0) * 1000) / 1000,
-      maxDurationSeconds: 15,
-      stylePrompt: stylePrompt.trim(),
-      localUri: picked.uri,
-    };
-
-    const created = await queue.createOrder({
-      type: "video_editor",
-      title: "Editor de Video ate 15s",
-      summary: stylePrompt.trim() ? `Edicao social curta: ${stylePrompt.trim()}` : "Edicao social curta com corte e entrega final.",
-      payload,
-    });
-    await queue.submitOrder(created.id);
-    router.push(`/orders/${created.id}`);
-  };
-
   const submit = async () => {
     if (!picked || submitting) return;
+    if (!hasRemoteEditor || !videoApiBase) {
+      setError("Editor de video indisponivel neste ambiente agora.");
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
+    setCompatibilityNotice(null);
 
     try {
-      if (hasRemoteEditor && videoApiBase) {
-        const templateId = selectedTemplate || templates[0]?.id;
-
-        const created = await submitCaptionJob({
-          baseUrl: videoApiBase,
-          file: {
-            uri: picked.uri,
-            name: picked.name,
-            type: picked.mimeType,
-          },
-          templateId,
-          instructions: stylePrompt,
-        });
-        setVideo(created);
-      } else {
-        await submitFallbackOrder();
+      const created = await submitVideoEditJob({
+        baseUrl: videoApiBase,
+        file: {
+          uri: picked.uri,
+          name: picked.name,
+          type: picked.mimeType,
+        },
+        mode: aiMode,
+        instructions: stylePrompt,
+      });
+      setVideo(created.video);
+      if (created.compatibilityMode) {
+        setCompatibilityNotice(
+          aiMode === "cut"
+            ? "Modo aplicado com compatibilidade do servidor. Neste ambiente, o resultado pode incluir legenda."
+            : "Modo aplicado com compatibilidade do servidor.",
+        );
       }
     } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Nao foi possivel iniciar o processamento.";
-      setError(getFriendlyError(message));
+      const message = submitError instanceof Error ? submitError.message : "Nao foi possivel iniciar a edicao.";
+      setError(humanizeVideoError(message));
     } finally {
       setSubmitting(false);
     }
@@ -355,7 +301,7 @@ export default function VideoEditorCreateScreen() {
       setViewerUrl(url);
     } catch (openError) {
       const message = openError instanceof Error ? openError.message : "Nao foi possivel abrir o video.";
-      setError(getFriendlyError(message));
+      setError(humanizeVideoError(message));
     }
   };
 
@@ -386,21 +332,22 @@ export default function VideoEditorCreateScreen() {
       }
     } catch (downloadError) {
       const message = downloadError instanceof Error ? downloadError.message : "Nao foi possivel baixar o video.";
-      setError(getFriendlyError(message));
+      setError(humanizeVideoError(message));
     } finally {
       setDownloadingUrl(null);
     }
   };
 
-  const phase = inferPhase(video);
+  const stage = stageFromVideo(video);
+  const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
 
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
         <Card>
-          <Kicker>Legendagem automatica PT-BR</Kicker>
-          <Title>Video captions em 1 clique</Title>
-          <Body>Envie video vertical e receba o arquivo final pronto.</Body>
+          <Kicker>Editor de video</Kicker>
+          <Title>Edite com IA em poucos toques</Title>
+          <Body>Envie seu video e escolha como a IA deve editar.</Body>
         </Card>
 
         <Card>
@@ -419,7 +366,7 @@ export default function VideoEditorCreateScreen() {
           {picked ? (
             <View style={styles.pickedMeta}>
               <Body>Arquivo: {picked.name}</Body>
-              <Body>Duração: {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(2)}s` : "não detectada"}</Body>
+              <Body>Duracao: {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(2)}s` : "nao detectada"}</Body>
               <Body>Origem: {picked.source === "camera" ? "Camera" : "Galeria"}</Body>
               {picked.sizeBytes ? <Body>Tamanho: {(picked.sizeBytes / (1024 * 1024)).toFixed(1)}MB</Body> : null}
             </View>
@@ -427,61 +374,58 @@ export default function VideoEditorCreateScreen() {
         </Card>
 
         <Card>
-          <SubTitle>Estilo da edicao (opcional)</SubTitle>
+          <SubTitle>Editar com IA</SubTitle>
+          <View style={styles.modeRow}>
+            <Chip label="Corte" active={aiMode === "cut"} onPress={() => setAiMode("cut")} />
+            <Chip label="Corte + Legenda" active={aiMode === "cut_captions"} onPress={() => setAiMode("cut_captions")} />
+          </View>
+          <Body style={styles.hint}>{modeDescription(aiMode)}</Body>
           <Field
-            label="Instrução de estilo"
+            label="Instrucao de estilo (opcional)"
             value={stylePrompt}
             onChangeText={setStylePrompt}
-            placeholder="Ex.: legenda maior e mais dinamica"
+            placeholder="Ex.: ritmo mais dinamico e foco nos pontos principais"
             multiline
           />
-          <Body style={styles.hint}>
-            {hasRemoteEditor
-              ? "Backend de captioning ativo. O app vai processar e liberar download ao concluir."
-              : "Sem backend remoto configurado: o app vai cair no fluxo local de pedido."}
-          </Body>
         </Card>
 
-        {hasRemoteEditor ? (
-          <Card>
-            <SubTitle>Status do job</SubTitle>
-            <Body style={styles.statusMain}>{progressLabel(video)}</Body>
-            <View style={styles.timeline}>
-              <Body style={phase === "upload" ? styles.timelineActive : styles.timelineItem}>upload</Body>
-              <Body style={phase === "queued" ? styles.timelineActive : styles.timelineItem}>queued</Body>
-              <Body style={phase === "processing" ? styles.timelineActive : styles.timelineItem}>processing</Body>
-              <Body style={phase === "complete" ? styles.timelineActive : phase === "failed" ? styles.timelineFailed : styles.timelineItem}>
-                {phase === "failed" ? "failed" : "complete"}
-              </Body>
+        <Card>
+          <SubTitle>Status da edicao</SubTitle>
+          <Body style={styles.statusMain}>{mapVideoStatusToClientLabel(video?.status, progress)}</Body>
+          {video?.status === "PROCESSING" ? <Body style={styles.hint}>{Math.max(1, Math.round(progress * 100))}% concluido</Body> : null}
+          {video?.status === "FAILED" && video.error?.message ? <Body style={styles.error}>{humanizeVideoError(video.error.message)}</Body> : null}
+          <View style={styles.timeline}>
+            <Body style={stage === "prepare" ? styles.timelineActive : styles.timelineItem}>Preparar</Body>
+            <Body style={stage === "edit" ? styles.timelineActive : styles.timelineItem}>Editar</Body>
+            <Body style={stage === "deliver" ? styles.timelineActive : styles.timelineItem}>Entregar</Body>
+            <Body style={stage === "done" ? styles.timelineActive : stage === "failed" ? styles.timelineFailed : styles.timelineItem}>
+              {stage === "failed" ? "Falha" : "Pronto"}
+            </Body>
+          </View>
+          {compatibilityNotice ? <Body style={styles.compatibility}>{compatibilityNotice}</Body> : null}
+          {video?.status === "COMPLETE" ? (
+            <View style={styles.completeActions}>
+              <Button label="Ver video no app" onPress={() => void openViewer()} variant="secondary" style={styles.downloadButton} />
+              <Button
+                label={downloadingUrl ? "Baixando..." : "Baixar no app"}
+                onPress={() => void downloadInsideApp()}
+                disabled={Boolean(downloadingUrl)}
+                style={styles.downloadButton}
+              />
             </View>
-            {video ? <Body>ID: {video.id}</Body> : <Body>Nenhum job iniciado ainda.</Body>}
-            {video?.status === "COMPLETE" ? (
-              <View style={styles.completeActions}>
-                <Button label="Ver video no app" onPress={() => void openViewer()} variant="secondary" style={styles.downloadButton} />
-                <Button
-                  label={downloadingUrl ? "Baixando..." : "Baixar no app"}
-                  onPress={() => void downloadInsideApp()}
-                  disabled={Boolean(downloadingUrl)}
-                  style={styles.downloadButton}
-                />
-              </View>
-            ) : null}
-          </Card>
-        ) : null}
+          ) : null}
+        </Card>
 
         <Card>
           {submitting ? (
             <View style={styles.loadingWrap}>
               <ActivityIndicator color={realTheme.colors.green} />
-              <Body>{hasRemoteEditor ? "Enviando e iniciando processamento..." : "Enviando e criando pedido..."}</Body>
+              <Body>Iniciando edicao...</Body>
             </View>
           ) : (
-            <Button
-              label={hasRemoteEditor ? "Enviar video e processar" : "Enviar para edicao"}
-              onPress={() => void submit()}
-              disabled={!canSubmit}
-            />
+            <Button label="Editar com IA" onPress={() => void submit()} disabled={!canSubmit} />
           )}
+          {!hasRemoteEditor ? <Body style={styles.hint}>Editor de video indisponivel neste ambiente agora.</Body> : null}
           {error ? <Body style={styles.error}>{error}</Body> : null}
         </Card>
       </ScrollView>
@@ -523,9 +467,19 @@ const styles = StyleSheet.create({
     marginTop: 10,
     gap: 2,
   },
+  modeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 4,
+  },
   hint: {
-    marginTop: 8,
+    marginTop: 6,
     color: realTheme.colors.muted,
+  },
+  compatibility: {
+    marginTop: 8,
+    color: "#d7e8bf",
   },
   loadingWrap: {
     flexDirection: "row",
@@ -535,29 +489,27 @@ const styles = StyleSheet.create({
   statusMain: {
     color: realTheme.colors.text,
     marginTop: 6,
-    marginBottom: 10,
+    marginBottom: 4,
   },
   timeline: {
     flexDirection: "row",
     justifyContent: "space-between",
     flexWrap: "wrap",
     rowGap: 6,
-    marginBottom: 10,
+    marginTop: 8,
+    marginBottom: 6,
   },
   timelineItem: {
     color: realTheme.colors.muted,
     fontSize: 13,
-    textTransform: "lowercase",
   },
   timelineActive: {
     color: realTheme.colors.green,
     fontSize: 13,
-    textTransform: "lowercase",
   },
   timelineFailed: {
     color: "#ff7070",
     fontSize: 13,
-    textTransform: "lowercase",
   },
   downloadButton: {
     width: "100%",

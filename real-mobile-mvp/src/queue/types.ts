@@ -105,10 +105,24 @@ export type AdsPublication = {
   updatedAt: string | null;
 };
 
+export type SitePublication = {
+  orderId: string;
+  customerId: string;
+  stage: "draft" | "building" | "preview_ready" | "awaiting_approval" | "publishing" | "published" | "failed";
+  slug: string | null;
+  previewUrl: string | null;
+  publicUrl: string | null;
+  retries: number;
+  lastError: string | null;
+  metadata: JsonValue;
+  updatedAt: string | null;
+};
+
 export type OrderDetail = Order & {
   events: OrderEvent[];
   deliverables: Deliverable[];
   approvals: Approval[];
   assets: OrderAsset[];
   adsPublication: AdsPublication | null;
+  sitePublication?: SitePublication | null;
 };

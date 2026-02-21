@@ -1,5 +1,5 @@
 import { Order } from '../queue/types';
-import { AdsRunningCreative } from '../ads/dashboardApi';
+import { AdsDashboardDailyPoint, AdsRunningCreative } from '../ads/dashboardApi';
 import { inferMonthlyBudget, inferCpl, getLiveOrders, getOrdersByType } from './orderService';
 
 export interface AdsDashboardMetrics {
@@ -60,21 +60,49 @@ export interface KPIData {
   monthlySpend: number;
   monthlyLeads: number;
   cpl: number | null;
+  previousMonthSpend: number;
+  previousMonthLeads: number;
+  previousMonthCpl: number | null;
   activeCreatives: number;
   updatedAt: string | null;
+  dailySeries: AdsDashboardDailyPoint[];
+  stale: boolean;
   source: 'server' | 'fallback';
 }
 
+function buildZeroDailySeries(now = new Date()): AdsDashboardDailyPoint[] {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const today = now.getUTCDate();
+  const out: AdsDashboardDailyPoint[] = [];
+  for (let day = 1; day <= today; day += 1) {
+    const date = new Date(Date.UTC(year, month, day));
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    out.push({
+      date: `${date.getUTCFullYear()}-${m}-${d}`,
+      spend: 0,
+      leads: 0,
+    });
+  }
+  return out;
+}
+
 export function buildKPIData(
-  metrics: AdsDashboardMetrics,
-  runningCreatives: AdsRunningCreative[],
+  _metrics: AdsDashboardMetrics,
+  _runningCreatives: AdsRunningCreative[],
   remoteData?: {
     activeCampaigns: number;
     monthlySpend: number;
     monthlyLeads: number;
-    cpl: number;
+    cpl: number | null;
+    previousMonthSpend: number;
+    previousMonthLeads: number;
+    previousMonthCpl: number | null;
     activeCreatives: number;
-    updatedAt: string;
+    updatedAt: string | null;
+    dailySeries: AdsDashboardDailyPoint[];
+    stale: boolean;
   }
 ): KPIData {
   if (remoteData) {
@@ -83,19 +111,49 @@ export function buildKPIData(
       monthlySpend: remoteData.monthlySpend,
       monthlyLeads: remoteData.monthlyLeads,
       cpl: remoteData.cpl,
+      previousMonthSpend: remoteData.previousMonthSpend,
+      previousMonthLeads: remoteData.previousMonthLeads,
+      previousMonthCpl: remoteData.previousMonthCpl,
       activeCreatives: remoteData.activeCreatives,
       updatedAt: remoteData.updatedAt,
+      dailySeries: Array.isArray(remoteData.dailySeries) ? remoteData.dailySeries : buildZeroDailySeries(),
+      stale: remoteData.stale === true,
       source: 'server',
     };
   }
 
   return {
-    liveAds: metrics.liveAds,
-    monthlySpend: metrics.monthlySpend,
-    monthlyLeads: Math.round(metrics.estimatedLeads),
-    cpl: metrics.cplAvg || null,
-    activeCreatives: runningCreatives.length,
+    liveAds: 0,
+    monthlySpend: 0,
+    monthlyLeads: 0,
+    cpl: null,
+    previousMonthSpend: 0,
+    previousMonthLeads: 0,
+    previousMonthCpl: null,
+    activeCreatives: 0,
     updatedAt: null,
+    dailySeries: buildZeroDailySeries(),
+    stale: false,
     source: 'fallback',
+  };
+}
+
+export function buildGrowthData(monthlyLeads: number, previousMonthLeads: number): { diffLeads: number; growthPct: number } {
+  const diffLeads = Math.round(monthlyLeads - previousMonthLeads);
+  const growthPct = previousMonthLeads > 0 ? Math.round((diffLeads / previousMonthLeads) * 100) : 0;
+  return { diffLeads, growthPct };
+}
+
+export function buildScaleProjection(monthlySpend: number, cpl: number | null): { dailyIncrease: number; extraLeads: number } {
+  if (!cpl || cpl <= 0 || monthlySpend <= 0) {
+    return { dailyIncrease: 0, extraLeads: 0 };
+  }
+
+  const baseDaily = monthlySpend / 30;
+  const suggested = Math.max(5, Math.round((baseDaily * 0.15) / 5) * 5);
+  const extraLeads = Math.max(0, Math.round((suggested * 30) / cpl));
+  return {
+    dailyIncrease: suggested,
+    extraLeads,
   };
 }

@@ -1,4 +1,5 @@
 export type VideoStatus = "QUEUED" | "PROCESSING" | "COMPLETE" | "FAILED" | "CANCELLED";
+export type AiEditMode = "cut" | "cut_captions";
 
 export type ApiError = {
   code: string;
@@ -32,11 +33,7 @@ type TemplateListResponse = {
   data: CaptionTemplate[];
 };
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  if (response.ok) {
-    return response.json() as Promise<T>;
-  }
-
+async function extractErrorMessage(response: Response): Promise<string> {
   let message = "Erro inesperado ao processar a solicitacao.";
   try {
     const payload = await response.json();
@@ -48,7 +45,14 @@ async function parseResponse<T>(response: Response): Promise<T> {
   } catch {
     // noop
   }
-  throw new Error(message);
+  return message;
+}
+
+async function parseResponse<T>(response: Response): Promise<T> {
+  if (response.ok) {
+    return response.json() as Promise<T>;
+  }
+  throw new Error(await extractErrorMessage(response));
 }
 
 function cleanBaseUrl(baseUrl: string): string {
@@ -91,6 +95,65 @@ export async function submitCaptionJob(params: {
     body,
   });
   return parseResponse<VideoItem>(response);
+}
+
+export async function submitVideoEditJob(params: {
+  baseUrl: string;
+  file: { uri: string; name: string; type: string };
+  mode: AiEditMode;
+  instructions?: string;
+}): Promise<{ video: VideoItem; compatibilityMode: boolean }> {
+  const safeBase = cleanBaseUrl(params.baseUrl);
+
+  const editsBody = new FormData();
+  editsBody.append(
+    "video",
+    {
+      uri: params.file.uri,
+      name: params.file.name,
+      type: params.file.type,
+    } as unknown as Blob,
+  );
+  editsBody.append("mode", params.mode);
+  editsBody.append("language", "pt-BR");
+  if (params.instructions?.trim()) {
+    editsBody.append("style_prompt", params.instructions.trim());
+  }
+
+  const editsResponse = await fetch(`${safeBase}/v1/videos/edits`, {
+    method: "POST",
+    body: editsBody,
+  });
+
+  if (editsResponse.ok) {
+    const created = (await editsResponse.json()) as VideoItem;
+    return { video: created, compatibilityMode: false };
+  }
+
+  // Backward compatibility: old servers only expose /captions.
+  if (editsResponse.status !== 404 && editsResponse.status !== 405) {
+    throw new Error(await extractErrorMessage(editsResponse));
+  }
+
+  const legacyBody = new FormData();
+  legacyBody.append(
+    "video",
+    {
+      uri: params.file.uri,
+      name: params.file.name,
+      type: params.file.type,
+    } as unknown as Blob,
+  );
+  legacyBody.append("language", "pt-BR");
+  if (params.instructions?.trim()) {
+    legacyBody.append("instructions", params.instructions.trim());
+  }
+  const legacyResponse = await fetch(`${safeBase}/v1/videos/captions`, {
+    method: "POST",
+    body: legacyBody,
+  });
+  const legacyCreated = await parseResponse<VideoItem>(legacyResponse);
+  return { video: legacyCreated, compatibilityMode: true };
 }
 
 export async function fetchVideo(baseUrl: string, videoId: string): Promise<VideoItem> {

@@ -29,10 +29,25 @@ services:
     command: npm start
     env_file:
       - ./queue-api/.env
+    environment:
+      - SITE_BUILDER_API_BASE_URL=http://site-builder-api:3340
     depends_on:
       - postgres
     ports:
       - "3334:3334"
+
+  site-builder-api:
+    build:
+      context: ./site-builder-api
+    command: npm start
+    environment:
+      - PORT=3340
+      - PUBLIC_BASE_URL=http://68.183.49.208
+      - SITE_PUBLISH_ROOT=/app/storage/public
+    volumes:
+      - ./site-builder-api/storage:/app/storage
+    ports:
+      - "3340:3340"
 
   codex-worker:
     build:
@@ -40,8 +55,11 @@ services:
     command: npm start
     env_file:
       - ./codex-worker/.env
+    environment:
+      - SITE_BUILDER_API_BASE_URL=http://site-builder-api:3340
     depends_on:
       - queue-api
+      - site-builder-api
 
 volumes:
   real_postgres_data:

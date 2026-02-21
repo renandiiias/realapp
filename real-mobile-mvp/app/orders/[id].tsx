@@ -3,10 +3,11 @@ import { ResizeMode, Video } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import type { Deliverable, DeliverableType, OrderDetail, OrderStatus } from "../../src/queue/types";
+import { buildVideoDeliverableSummary } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -75,6 +76,44 @@ function extractVideoUrl(deliverable: Deliverable): string | null {
     const normalized = normalizeVideoUrl(asset);
     if (normalized && isLikelyVideoUrl(normalized)) return normalized;
   }
+  return null;
+}
+
+function normalizeSiteUrl(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  return null;
+}
+
+function extractSiteUrl(detail: OrderDetail, deliverable: Deliverable): string | null {
+  if (detail.type !== "site" || deliverable.type !== "url_preview") return null;
+  const content = deliverable.content;
+  if (typeof content === "string") {
+    const fromString = normalizeSiteUrl(content);
+    if (fromString) return fromString;
+  }
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const maybeContent = content as {
+      publicUrl?: unknown;
+      previewUrl?: unknown;
+      url?: unknown;
+    };
+    for (const candidate of [maybeContent.publicUrl, maybeContent.previewUrl, maybeContent.url]) {
+      if (typeof candidate === "string") {
+        const normalized = normalizeSiteUrl(candidate);
+        if (normalized) return normalized;
+      }
+    }
+  }
+  for (const item of deliverable.assetUrls) {
+    const normalized = normalizeSiteUrl(item);
+    if (normalized) return normalized;
+  }
+
+  const publication = detail.sitePublication;
+  if (typeof publication?.publicUrl === "string" && publication.publicUrl.trim()) return publication.publicUrl.trim();
+  if (typeof publication?.previewUrl === "string" && publication.previewUrl.trim()) return publication.previewUrl.trim();
   return null;
 }
 
@@ -242,6 +281,16 @@ export default function OrderDetailScreen() {
     }
   };
 
+  const openExternal = async (url: string) => {
+    try {
+      setError(null);
+      await Linking.openURL(url);
+    } catch (openError) {
+      const message = openError instanceof Error ? openError.message : "Não foi possível abrir o link.";
+      setError(message);
+    }
+  };
+
   return (
     <Screen>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
@@ -257,6 +306,20 @@ export default function OrderDetailScreen() {
             <StatusPill status={detail.status} />
             <Body style={styles.statusText}>{statusHeadline(detail.status)}</Body>
           </View>
+          {detail.type === "site" && detail.sitePublication ? (
+            <View style={styles.sitePublicationBox}>
+              <Body style={styles.sitePublicationTitle}>Publicação do site: {detail.sitePublication.stage}</Body>
+              {detail.sitePublication.previewUrl ? (
+                <Body style={styles.sitePublicationLine}>Preview: {detail.sitePublication.previewUrl}</Body>
+              ) : null}
+              {detail.sitePublication.publicUrl ? (
+                <Body style={styles.sitePublicationLine}>Publicado: {detail.sitePublication.publicUrl}</Body>
+              ) : null}
+              {detail.sitePublication.lastError ? (
+                <Body style={styles.sitePublicationError}>Erro: {detail.sitePublication.lastError}</Body>
+              ) : null}
+            </View>
+          ) : null}
 
           {detail.status === "draft" ? (
             <>
@@ -299,13 +362,19 @@ export default function OrderDetailScreen() {
                 const isPending = approval?.status === "pending";
                 const isTerminal = approval?.status === "approved" || approval?.status === "changes_requested";
                 const videoUrl = d.type === "url_preview" ? extractVideoUrl(d) : null;
+                const isVideoPreview = d.type === "url_preview" && Boolean(videoUrl);
+                const siteUrl = extractSiteUrl(detail, d);
                 return (
                   <View key={d.id} style={styles.deliverable}>
                     <View style={styles.deliverableTop}>
                       <SubTitle style={styles.deliverableTitle}>{deliverableLabel(d.type)}</SubTitle>
                       <Text style={styles.deliverableStatus}>{d.status}</Text>
                     </View>
-                    <Text style={styles.mono}>{prettyJson(d.content)}</Text>
+                    {isVideoPreview ? (
+                      <Body style={styles.videoSummary}>{buildVideoDeliverableSummary(d.content)}</Body>
+                    ) : (
+                      <Text style={styles.mono}>{prettyJson(d.content)}</Text>
+                    )}
                     {videoUrl ? (
                       <View style={styles.videoActions}>
                         <Video
@@ -321,6 +390,11 @@ export default function OrderDetailScreen() {
                           onPress={() => void downloadInsideApp(videoUrl)}
                           disabled={downloadingUrl === videoUrl}
                         />
+                      </View>
+                    ) : null}
+                    {!videoUrl && siteUrl ? (
+                      <View style={styles.videoActions}>
+                        <Button label="Abrir link do site" onPress={() => void openExternal(siteUrl)} />
                       </View>
                     ) : null}
 
@@ -437,6 +511,30 @@ const styles = StyleSheet.create({
   statusText: {
     color: realTheme.colors.muted,
   },
+  sitePublicationBox: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(53,226,20,0.35)",
+    backgroundColor: "rgba(13,18,14,0.82)",
+    borderRadius: 10,
+    padding: 10,
+    gap: 4,
+  },
+  sitePublicationTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 13,
+  },
+  sitePublicationLine: {
+    color: realTheme.colors.muted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  sitePublicationError: {
+    color: "#ff9d9d",
+    fontSize: 12,
+    lineHeight: 17,
+  },
   productionPending: {
     color: realTheme.colors.green,
     fontFamily: realTheme.fonts.bodyMedium,
@@ -481,6 +579,10 @@ const styles = StyleSheet.create({
     fontFamily: realTheme.fonts.bodyRegular,
     fontSize: 13,
     lineHeight: 18,
+  },
+  videoSummary: {
+    color: realTheme.colors.text,
+    lineHeight: 20,
   },
   approvalMeta: {
     color: realTheme.colors.muted,

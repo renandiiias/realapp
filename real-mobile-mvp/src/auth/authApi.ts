@@ -112,8 +112,7 @@ async function authRequest(path: string, init: RequestInit): Promise<AuthSuccess
       },
     });
   } catch {
-    if (path.includes("/register")) return upsertLocalUser(fallbackEmail, fallbackPassword);
-    return loginLocalUser(fallbackEmail, fallbackPassword);
+    throw new Error("Falha de conexão com o servidor de autenticação.");
   }
 
   const raw = await res.text();
@@ -121,13 +120,14 @@ async function authRequest(path: string, init: RequestInit): Promise<AuthSuccess
   try {
     data = raw ? (JSON.parse(raw) as { error?: string; token?: string; user?: AuthUser }) : {};
   } catch {
-    if (path.includes("/register")) return upsertLocalUser(fallbackEmail, fallbackPassword);
-    return loginLocalUser(fallbackEmail, fallbackPassword);
+    throw new Error("Resposta inválida do servidor de autenticação.");
   }
 
   if (!res.ok || !data.token || !data.user) {
-    if (path.includes("/register")) return upsertLocalUser(fallbackEmail, fallbackPassword);
-    return loginLocalUser(fallbackEmail, fallbackPassword);
+    if (typeof data.error === "string" && data.error.trim()) {
+      throw new Error(data.error.trim());
+    }
+    throw new Error("Não foi possível autenticar. Tente novamente.");
   }
 
   return { token: data.token, user: data.user };

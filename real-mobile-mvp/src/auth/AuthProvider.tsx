@@ -105,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const [
         loggedRaw,
+        tokenRaw,
         minimumOnboardingRaw,
         appTourRaw,
         userEmailRaw,
@@ -114,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         referralCouponRaw,
       ] = await Promise.all([
         AsyncStorage.getItem(KEY_LOGGED),
+        AsyncStorage.getItem(KEY_TOKEN),
         AsyncStorage.getItem(KEY_MINIMUM_ONBOARDING_DONE),
         AsyncStorage.getItem(KEY_APP_TOUR_DONE),
         AsyncStorage.getItem(KEY_USER_EMAIL),
@@ -137,8 +139,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Keep onboarding sequence strict: if app tour has never been marked as done,
       // require it once before releasing full tab navigation.
       const appTourDone = appTourRaw === "true";
+      const hasRemoteAuthConfigured = Boolean(
+        process.env.EXPO_PUBLIC_AUTH_API_BASE_URL && process.env.EXPO_PUBLIC_AUTH_API_BASE_URL.trim().length > 0,
+      );
+      const hasLegacyLocalToken = typeof tokenRaw === "string" && tokenRaw.startsWith("local-dev-");
+      const forceRemoteRelogin = hasRemoteAuthConfigured && hasLegacyLocalToken;
 
-      setLoggedIn(loggedRaw === "true");
+      setLoggedIn(forceRemoteRelogin ? false : loggedRaw === "true");
       setHasSeenTour(minimumDone);
       setAppTourCompleted(appTourDone);
       setUserEmail(userEmailRaw);
@@ -146,21 +153,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setCompanyProfile(parsedCompany);
       setFeedbacks(parsedFeedbacks);
       setReferralCoupon(parsedCoupon);
+      if (forceRemoteRelogin) {
+        await AsyncStorage.multiSet([
+          [KEY_LOGGED, "false"],
+          [KEY_TOKEN, ""],
+        ]);
+      }
       setReady(true);
     })().catch(() => {
       setReady(true);
     });
   }, []);
 
-  const persistSession = useCallback(async (token: string, email: string) => {
-    await Promise.all([
-      AsyncStorage.setItem(KEY_LOGGED, "true"),
-      AsyncStorage.setItem(KEY_TOKEN, token),
-      AsyncStorage.setItem(KEY_USER_EMAIL, email),
-    ]);
-    setLoggedIn(true);
-    setUserEmail(email);
-  }, []);
+  const persistSession = useCallback(
+    async (token: string, email: string) => {
+      const nextEmail = email.trim().toLowerCase();
+      const prevEmail = (userEmail ?? "").trim().toLowerCase();
+      const switchedAccount = Boolean(prevEmail) && prevEmail !== nextEmail;
+
+      if (switchedAccount) {
+        // Prevent leaking onboarding/profile data between different accounts.
+        await AsyncStorage.multiRemove([
+          KEY_MINIMUM_ONBOARDING_DONE,
+          KEY_APP_TOUR_DONE,
+          KEY_RAY_X,
+          KEY_COMPANY_PROFILE,
+          KEY_FEEDBACKS,
+          KEY_REFERRAL_COUPON,
+        ]);
+        setHasSeenTour(false);
+        setAppTourCompleted(false);
+        setRayX(null);
+        setCompanyProfile(null);
+        setFeedbacks([]);
+        setReferralCoupon(null);
+      }
+
+      await Promise.all([
+        AsyncStorage.setItem(KEY_LOGGED, "true"),
+        AsyncStorage.setItem(KEY_TOKEN, token),
+        AsyncStorage.setItem(KEY_USER_EMAIL, nextEmail),
+      ]);
+      setLoggedIn(true);
+      setUserEmail(nextEmail);
+    },
+    [userEmail],
+  );
 
   const persistProfile = useCallback(
     async (
@@ -194,8 +232,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (email: string, password: string) => {
       const session = await loginWithPasswordRequest(email, password);
       await persistSession(session.token, session.user.email);
+      if (!hasSeenTour) {
+        await AsyncStorage.setItem(KEY_MINIMUM_ONBOARDING_DONE, "true");
+        setHasSeenTour(true);
+      }
+      if (!appTourCompleted) {
+        await AsyncStorage.setItem(KEY_APP_TOUR_DONE, "true");
+        setAppTourCompleted(true);
+      }
     },
-    [persistSession],
+    [appTourCompleted, hasSeenTour, persistSession],
   );
 
   const registerWithPassword = useCallback(
@@ -306,30 +352,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     await AsyncStorage.multiRemove([
       KEY_LOGGED,
-      KEY_MINIMUM_ONBOARDING_DONE,
-      KEY_APP_TOUR_DONE,
       KEY_TOKEN,
       KEY_USER_EMAIL,
-      KEY_RAY_X,
-      KEY_COMPANY_PROFILE,
-      KEY_FEEDBACKS,
-      KEY_REFERRAL_COUPON,
     ]);
-    await Promise.all([
-      AsyncStorage.setItem(KEY_LOGGED, "false"),
-      AsyncStorage.setItem(KEY_MINIMUM_ONBOARDING_DONE, "false"),
-      AsyncStorage.setItem(KEY_APP_TOUR_DONE, "false"),
-    ]);
+    await AsyncStorage.setItem(KEY_LOGGED, "false");
     setLoggedIn(false);
-    setHasSeenTour(false);
-    setAppTourCompleted(false);
     setGuidedTourActive(false);
     setGuidedTourStepState(0);
     setUserEmail(null);
-    setRayX(null);
-    setCompanyProfile(null);
-    setFeedbacks([]);
-    setReferralCoupon(null);
   }, []);
 
   const submitFeedback = useCallback(
@@ -374,7 +404,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       appTourCompleted,
       guidedTourActive,
       guidedTourStep,
-      profileMinimumComplete: readiness.profileMinimumComplete,
+      profileMinimumComplete: readiness.profileMinimumComplete || hasSeenTour,
       profileProductionComplete: readiness.profileProductionComplete,
       companyProfileComplete: readiness.profileProductionComplete,
       missingForMinimum: readiness.missingForMinimum,
