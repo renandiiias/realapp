@@ -1,7 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -28,6 +30,33 @@ const PLACEHOLDER_MESSAGES = [
   "Ex: site para restaurante com cardápio, reservas e entrega...",
 ];
 
+const MAGIC_LOADING_STEPS = [
+  "Interpretando seu pedido em linguagem natural...",
+  "Desenhando estrutura e estilo da página...",
+  "Escrevendo HTML, CSS e JS com alta fidelidade...",
+  "Preparando preview ao vivo para você revisar...",
+];
+
+const TYPOGRAPHY_ANTI_CLIP_STYLE = `
+<style id="real-anti-clip">
+  h1, h2, h3, .hero__title, .title {
+    line-height: 1.16 !important;
+    padding-top: 0.14em !important;
+    padding-bottom: 0.08em !important;
+    overflow: visible !important;
+    text-rendering: geometricPrecision !important;
+    -webkit-font-smoothing: antialiased !important;
+  }
+  .hero__content, .content {
+    overflow: visible !important;
+  }
+  button, .btn, [class*="btn"], [class*="button"] {
+    box-shadow: none !important;
+    filter: none !important;
+    text-shadow: none !important;
+  }
+</style>`;
+
 function mergeCodeToHtml(code?: SiteCodeBundle | null): string {
   const html = String(code?.html || "").trim();
   const css = String(code?.css || "").trim();
@@ -41,6 +70,7 @@ function mergeCodeToHtml(code?: SiteCodeBundle | null): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Preview</title>
+  ${TYPOGRAPHY_ANTI_CLIP_STYLE}
   ${css ? `<style>${css}</style>` : ""}
 </head>
 <body>
@@ -51,6 +81,11 @@ ${js ? `<script>${js}</script>` : ""}
   }
 
   let merged = html;
+  if (/<\/head>/i.test(merged)) {
+    merged = merged.replace(/<\/head>/i, `${TYPOGRAPHY_ANTI_CLIP_STYLE}</head>`);
+  } else {
+    merged = `${TYPOGRAPHY_ANTI_CLIP_STYLE}${merged}`;
+  }
   if (css) {
     if (/<\/head>/i.test(merged)) merged = merged.replace(/<\/head>/i, `<style>${css}</style></head>`);
     else merged = `<style>${css}</style>${merged}`;
@@ -81,6 +116,10 @@ export default function SiteCreatorV3() {
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
   const [typedPlaceholder, setTypedPlaceholder] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const ringAnim = useRef(new Animated.Value(0)).current;
+  const shimmerAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     let messageIndex = 0;
@@ -118,6 +157,95 @@ export default function SiteCreatorV3() {
       if (timer) clearTimeout(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      setLoadingStep(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setLoadingStep((prev) => (prev + 1) % MAGIC_LOADING_STEPS.length);
+    }, 1400);
+    return () => clearInterval(interval);
+  }, [loading]);
+
+  useEffect(() => {
+    if (!loading) {
+      pulseAnim.stopAnimation();
+      ringAnim.stopAnimation();
+      shimmerAnim.stopAnimation();
+      pulseAnim.setValue(0);
+      ringAnim.setValue(0);
+      shimmerAnim.setValue(0);
+      return;
+    }
+
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    const ringLoop = Animated.loop(
+      Animated.timing(ringAnim, {
+        toValue: 1,
+        duration: 1700,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    );
+    const shimmerLoop = Animated.loop(
+      Animated.timing(shimmerAnim, {
+        toValue: 1,
+        duration: 1500,
+        easing: Easing.inOut(Easing.linear),
+        useNativeDriver: true,
+      }),
+    );
+
+    pulseLoop.start();
+    ringLoop.start();
+    shimmerLoop.start();
+    return () => {
+      pulseLoop.stop();
+      ringLoop.stop();
+      shimmerLoop.stop();
+      pulseAnim.setValue(0);
+      ringAnim.setValue(0);
+      shimmerAnim.setValue(0);
+    };
+  }, [loading, pulseAnim, ringAnim, shimmerAnim]);
+
+  const coreScale = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.92, 1.08],
+  });
+  const coreOpacity = pulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.6, 1],
+  });
+  const ringScale = ringAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.7, 1.9],
+  });
+  const ringOpacity = ringAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.55, 0.05],
+  });
+  const shimmerTranslateX = shimmerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-180, 220],
+  });
 
   const mergedHtml = useMemo(() => mergeCodeToHtml(live?.code || null), [live?.code]);
   const hasPreview = Boolean(mergedHtml || live?.previewUrl);
@@ -167,7 +295,7 @@ export default function SiteCreatorV3() {
 
   const publish = async () => {
     if (!live?.slug || publishing) return;
-    if (!live.code && !live.builderSpec) {
+    if (!live.code) {
       setError("Nada para publicar ainda. Gere um preview primeiro.");
       setUiState("error");
       return;
@@ -179,7 +307,7 @@ export default function SiteCreatorV3() {
     try {
       const response = await publishLiveSite({
         slug: live.slug,
-        ...(live.code ? { code: live.code } : { builderSpec: live.builderSpec! }),
+        code: live.code,
       });
       setPublishedUrl(response.publicUrl);
       setUiState("published");
@@ -196,8 +324,6 @@ export default function SiteCreatorV3() {
     <Screen plain style={styles.screen}>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <View style={styles.container}>
-          <View pointerEvents="none" style={styles.ambientGlow} />
-
           <View style={styles.previewWrap}>
             <View style={styles.previewHeader}>
               <Text style={styles.previewTitle}>Preview ao vivo</Text>
@@ -216,9 +342,38 @@ export default function SiteCreatorV3() {
             <View style={styles.previewBody}>
               {loading && !hasPreview ? (
                 <View style={styles.centerState}>
-                  <ActivityIndicator color={realTheme.colors.green} size="large" />
-                  <Text style={styles.centerTitle}>Criando seu site agora</Text>
-                  <Text style={styles.centerText}>A IA está escrevendo HTML, CSS e JS com base no seu pedido.</Text>
+                  <View style={styles.magicLoaderWrap}>
+                    <Animated.View
+                      style={[
+                        styles.magicRing,
+                        {
+                          opacity: ringOpacity,
+                          transform: [{ scale: ringScale }],
+                        },
+                      ]}
+                    />
+                    <Animated.View
+                      style={[
+                        styles.magicCore,
+                        {
+                          opacity: coreOpacity,
+                          transform: [{ scale: coreScale }],
+                        },
+                      ]}
+                    />
+                    <Text style={styles.magicTitle}>Construindo seu site com IA</Text>
+                    <Text style={styles.magicText}>{MAGIC_LOADING_STEPS[loadingStep]}</Text>
+                    <View style={styles.magicTrack}>
+                      <Animated.View
+                        style={[
+                          styles.magicShimmer,
+                          {
+                            transform: [{ translateX: shimmerTranslateX }],
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
                 </View>
               ) : null}
 
@@ -244,12 +399,13 @@ export default function SiteCreatorV3() {
             </View>
           </View>
 
-          {publishedUrl ? <Text style={styles.okText}>Publicado: {publishedUrl}</Text> : null}
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {webLoadError ? <Text style={styles.errorText}>{webLoadError}</Text> : null}
+          <View style={styles.statusWrap}>
+            {publishedUrl ? <Text style={styles.okText}>Publicado: {publishedUrl}</Text> : null}
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            {webLoadError ? <Text style={styles.errorText}>{webLoadError}</Text> : null}
+          </View>
 
           <View style={styles.inputFloatWrap}>
-            <View style={styles.inputHalo} />
             <View style={[styles.inputDock, inputFocused && styles.inputDockFocused]}>
               <View style={styles.inputInner}>
                 <TextInput
@@ -299,16 +455,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 10,
     paddingBottom: Platform.OS === "ios" ? 22 : 12,
-  },
-  ambientGlow: {
-    position: "absolute",
-    left: "10%",
-    right: "10%",
-    bottom: 58,
-    height: 120,
-    borderRadius: 80,
-    backgroundColor: "rgba(69,255,102,0.16)",
-    opacity: 0.7,
   },
   previewWrap: {
     flex: 1,
@@ -373,6 +519,65 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 20,
   },
+  magicLoaderWrap: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+  },
+  magicRing: {
+    position: "absolute",
+    width: 148,
+    height: 148,
+    borderRadius: 74,
+    borderWidth: 1.5,
+    borderColor: "rgba(69,255,102,0.4)",
+  },
+  magicCore: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: "rgba(69,255,102,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(69,255,102,0.85)",
+    shadowColor: "#45ff66",
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+    marginBottom: 18,
+  },
+  magicTitle: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 17,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  magicText: {
+    color: "rgba(237,237,238,0.76)",
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 13,
+    textAlign: "center",
+    marginBottom: 12,
+    minHeight: 18,
+  },
+  magicTrack: {
+    width: 230,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(69,255,102,0.22)",
+  },
+  magicShimmer: {
+    width: 110,
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "rgba(69,255,102,0.85)",
+    opacity: 0.85,
+  },
   centerTitle: {
     color: realTheme.colors.text,
     fontFamily: realTheme.fonts.bodySemiBold,
@@ -388,35 +593,32 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   okText: {
-    marginTop: 8,
+    marginTop: 2,
     color: "#8CFF7A",
     fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 12,
   },
   errorText: {
-    marginTop: 8,
+    marginTop: 2,
     color: "#FF9090",
     fontFamily: realTheme.fonts.bodyMedium,
     fontSize: 12,
+  },
+  statusWrap: {
+    marginTop: 8,
+    marginBottom: 10,
+    minHeight: 16,
+    justifyContent: "center",
+    zIndex: 2,
   },
   inputFloatWrap: {
     marginTop: 10,
     position: "relative",
   },
-  inputHalo: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    top: -10,
-    bottom: -10,
-    borderRadius: 999,
-    backgroundColor: "rgba(69,255,102,0.18)",
-    opacity: 0.45,
-  },
   inputDock: {
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: "rgba(69,255,102,0.52)",
+    borderColor: "rgba(255,255,255,0.16)",
     backgroundColor: "rgba(8,13,20,0.96)",
     paddingHorizontal: 8,
     paddingVertical: 8,
@@ -424,12 +626,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   inputDockFocused: {
-    borderColor: "rgba(69,255,102,0.95)",
-    shadowColor: "#45ff66",
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 6,
+    borderColor: "rgba(69,255,102,0.72)",
   },
   inputInner: {
     flex: 1,
@@ -455,5 +652,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: realTheme.colors.green,
+    shadowOpacity: 0,
+    elevation: 0,
   },
 });

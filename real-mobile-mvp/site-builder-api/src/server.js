@@ -16,11 +16,14 @@ const ZAI_BASE_URL = String(process.env.ZAI_BASE_URL || process.env.EXPO_PUBLIC_
 const ZAI_API_KEY = String(process.env.ZAI_API_KEY || process.env.EXPO_PUBLIC_ZAI_API_KEY || "").trim();
 const ZAI_MODEL = String(process.env.ZAI_MODEL || process.env.EXPO_PUBLIC_ZAI_MODEL || "glm-4.5-air").trim();
 const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 30000);
-const SITE_BUILDER_V3_RAW = String(process.env.SITE_BUILDER_V3_RAW || "true").trim().toLowerCase() !== "false";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 const codeGenerationFailureCounter = new Map();
+
+function logSite(level, event, meta = {}) {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), level, event, ...meta }));
+}
 
 const builderBlockSchema = z.object({
   id: z.string().min(2).max(80),
@@ -700,32 +703,63 @@ function coerceCodeBundle(candidate) {
 
 function looksLikeLowQualityOutput(prompt, codeBundle) {
   const promptText = String(prompt || "").toLowerCase();
-  const merged = `${codeBundle?.html || ""}\n${codeBundle?.css || ""}\n${codeBundle?.js || ""}`.toLowerCase();
+  const merged = `${codeBundle?.html || ""}\n${codeBundle?.css || ""}\n${codeBundle?.js || ""}`;
+  const lower = merged.toLowerCase();
   if (!merged.trim()) return true;
-
-  const sectionCount =
-    (merged.match(/<section\b/g) || []).length +
-    (merged.match(/<article\b/g) || []).length +
-    (merged.match(/<main\b/g) || []).length;
-  if (sectionCount < 2) return true;
-
-  if (/sua empresa|site gerado por ia|lorem ipsum/.test(merged) && !/sua empresa|site gerado|lorem ipsum/.test(promptText)) {
+  if (!/<html[\s>]|<!doctype html/i.test(merged)) return true;
+  if (!/<body[\s>]/i.test(merged)) return true;
+  if (/{{|}}|<\?php|TODO:/i.test(merged)) return true;
+  if (/sua empresa|site gerado por ia|lorem ipsum/.test(lower) && !/sua empresa|site gerado|lorem ipsum/.test(promptText)) {
     return true;
   }
-
-  if (/(clinica|clínica|dentista|odont|fisioterapia|sa[uú]de)/i.test(promptText)) {
-    if (!/(consulta|paciente|agend|especialidad|atendimento|cl[íi]nica|m[eé]dico|m[eé]dica)/i.test(merged)) {
-      return true;
-    }
-  }
-
-  if (/(restaurante|pizzaria|hamburg|caf[eé]|bar|delivery)/i.test(promptText)) {
-    if (!/(card[aá]pio|menu|prato|reserva|delivery|cozinha|mesa)/i.test(merged)) {
-      return true;
-    }
-  }
-
   return false;
+}
+
+function detectThemeHints(prompt) {
+  const text = String(prompt || "").toLowerCase();
+  const hints = [];
+  if (/\bazul\b/.test(text)) hints.push("azul");
+  if (/\brosa\b/.test(text)) hints.push("rosa");
+  if (/\bverde\b/.test(text)) hints.push("verde");
+  if (/\bminimal\b|\bclean\b|\bclean\b|\bmoderno\b/.test(text)) hints.push("estilo");
+  return hints;
+}
+
+function qualityMissingSignals(prompt, codeBundle) {
+  const html = String(codeBundle?.html || "");
+  const css = String(codeBundle?.css || "");
+  const js = String(codeBundle?.js || "");
+  const merged = `${html}\n${css}\n${js}`.toLowerCase();
+  const missing = [];
+
+  // 1) Visual moderno (heurístico)
+  const hasModernVisual =
+    /gradient|backdrop-filter|box-shadow|border-radius|glass|clamp\(|linear-gradient|radial-gradient/.test(merged);
+  if (!hasModernVisual) missing.push("visual moderno");
+
+  // 2) Fotos fortes na primeira seção/hero
+  const firstChunk = html.slice(0, 4500).toLowerCase();
+  const hasPhotoNearTop =
+    /<img[\s\S]*?(hero|banner|topo|principal)|<img[\s\S]*?src=|background-image\s*:|url\((https?:)?\/\//.test(firstChunk);
+  if (!hasPhotoNearTop) missing.push("foto forte na primeira seção");
+
+  // 3) Efeitos visuais/animações
+  const hasEffects = /@keyframes|animation:|transition:|transform:|parallax|hover/.test(merged);
+  if (!hasEffects) missing.push("efeitos visuais/animações");
+
+  // 4) WhatsApp flutuante
+  const hasWhatsAppLink = /wa\.me|whatsapp/.test(merged);
+  const hasFloating = /position\s*:\s*fixed/.test(merged);
+  if (!(hasWhatsAppLink && hasFloating)) missing.push("botão flutuante de WhatsApp");
+
+  // 5) Aderência mínima ao estilo/tema pedido (heurística leve)
+  const themeHints = detectThemeHints(prompt);
+  if (themeHints.length > 0) {
+    const matches = themeHints.some((hint) => merged.includes(hint));
+    if (!matches) missing.push("aderência ao tema/estilo pedido");
+  }
+
+  return missing;
 }
 
 async function generateCodeBundleWithZai({ prompt, previous, context }) {
@@ -737,38 +771,37 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
     "You are a principal frontend engineer focused on production-ready marketing websites.",
     "Return only strict JSON with keys: html, css, js. Never markdown.",
     "The html key MUST contain a full complete HTML document.",
-    "Follow the user prompt exactly and make every requested detail explicit in layout, copy and styling.",
-    "Do NOT output generic placeholders such as 'Sua empresa' unless user explicitly requested that phrase.",
-    "Never default to a simplistic single-screen page.",
-    "Always build a robust multi-section website with: hero, value proposition, services/benefits, trust proof (testimonials or metrics), FAQ or process, and strong CTA.",
-    "If the prompt is broad (example: 'site para minha clínica'), infer a high-quality complete website for that business segment.",
-    "If a color theme is requested, apply it consistently across the entire interface.",
+    "Follow the user prompt exactly. Do not force fixed templates, fixed section counts, or predefined categories.",
     "Use the same language as the user prompt.",
+    "Prioritize quality: modern visual style, polished typography, responsive layout and smooth visual effects/animations.",
+    "The first visible section should include strong imagery/photos relevant to the prompt.",
+    "Include a floating WhatsApp contact button in the interface.",
+    "If the prompt asks a specific theme (color/style/layout), respect it strictly.",
+    "Avoid generic placeholders unless the user explicitly asked for them.",
     "Output static, secure browser-safe code with responsive design.",
     "Keep the output concise enough to fit response limits. Prefer reusable CSS classes and avoid verbose repetitive markup.",
   ].join("\n");
 
-  const attempts = [
-    { temperature: 0.45, strictHint: "" },
-    {
-      temperature: 0.25,
-      strictHint: "CRITICAL: return a single JSON object only. No prose, no markdown fences.",
-    },
-  ];
+  const attempts = [{ temperature: 0.45 }, { temperature: 0.25 }];
 
   let lastError = null;
+  let lastMissingSignals = [];
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
     const attemptLabel = `attempt_${index + 1}`;
-    console.log(
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        event: "code_generate_attempt",
-        attemptLabel,
-        attempt: index + 1,
-        customerId: context?.customerId || null,
-      }),
-    );
+    const strictHint =
+      index === 0
+        ? ""
+        : `CRITICAL: return valid JSON only and satisfy all quality requirements. Missing in previous attempt: ${lastMissingSignals.join(
+            ", ",
+          ) || "quality requirements"}.`;
+    logSite("info", "code_generate_attempt", {
+      attemptLabel,
+      attempt: index + 1,
+      customerId: context?.customerId || null,
+      traceId: context?.traceId || null,
+      model: ZAI_MODEL,
+    });
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.max(8000, ZAI_TIMEOUT_MS));
@@ -793,7 +826,7 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
                 prompt: String(prompt || "").slice(0, 1800),
                 previous: previous || null,
                 context: context || {},
-                strict: attempt.strictHint,
+                strict: strictHint,
               }),
             },
           ],
@@ -824,18 +857,20 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
       if (looksLikeLowQualityOutput(prompt, valid.data)) {
         throw new Error("zai_low_quality_output");
       }
+      const missingSignals = qualityMissingSignals(prompt, valid.data);
+      if (missingSignals.length > 0) {
+        lastMissingSignals = missingSignals;
+        throw new Error(`zai_quality_requirements_missing:${missingSignals.join(",")}`);
+      }
       return { code: valid.data, retryCount: index };
     } catch (error) {
-      console.warn(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          event: "code_generate_attempt_failed",
-          attemptLabel,
-          attempt: index + 1,
-          customerId: context?.customerId || null,
-          error: String(error),
-        }),
-      );
+      logSite("warn", "code_generate_attempt_failed", {
+        attemptLabel,
+        attempt: index + 1,
+        customerId: context?.customerId || null,
+        traceId: context?.traceId || null,
+        error: String(error),
+      });
       lastError = error;
     } finally {
       clearTimeout(timeout);
@@ -1229,7 +1264,7 @@ async function publishFinalCode(payload, slug) {
 app.get("/health", async (_req, res) => {
   return res.json({
     ok: true,
-    engine: SITE_BUILDER_V3_RAW ? "site-builder-v3-raw" : "bolt-diy-adapter-v1",
+    engine: "site-builder-v3-raw",
     vendorPath: BOLT_VENDOR_PATH,
     vendorPresent: hasBoltVendor(),
   });
@@ -1284,69 +1319,57 @@ app.post("/v1/autobuild", async (req, res) => {
 app.post("/v1/code/generate", async (req, res) => {
   const parsed = codeGenerateSchema.safeParse(req.body || {});
   if (!parsed.success) {
+    logSite("warn", "code_generate_invalid_payload", {
+      issues: parsed.error.flatten(),
+    });
     return res.status(400).json({ error: "invalid_payload", issues: parsed.error.flatten() });
   }
 
+  const traceId = String(parsed.data.context?.traceId || `sb-${Date.now().toString(36)}`);
   try {
     const { prompt, previous, context } = parsed.data;
-    if (!SITE_BUILDER_V3_RAW) {
-      let code = fallbackCodeBundle(prompt);
-      let engine = "fallback-code";
-
-      try {
-        const aiResult = await generateCodeBundleWithZai({ prompt, previous: previous || null, context: context || {} });
-        if (aiResult?.code) {
-          code = aiResult.code;
-          engine = `zai-${ZAI_MODEL}`;
-        }
-      } catch (zaiError) {
-        console.error("code_generate_zai_failed", String(zaiError));
-      }
-
-      const builderSpec = codeToBuilderSpec(prompt, code, null);
-      const validSpec = builderSpecSchema.safeParse(builderSpec);
-      if (!validSpec.success) {
-        return res.status(500).json({ error: "code_generate_invalid_spec", issues: validSpec.error.flatten() });
-      }
-
-      return res.json({
-        code,
-        builderSpec: validSpec.data,
-        meta: {
-          engine,
-          generatedAt: new Date().toISOString(),
-          aiEnabled: Boolean(ZAI_API_KEY),
-          retryCount: 0,
-          deprecated: "builderSpec is legacy. Use code {html,css,js}.",
-        },
-      });
-    }
+    logSite("info", "code_generate_start", {
+      traceId,
+      promptLength: prompt.length,
+      hasPreviousHtml: Boolean(previous?.html),
+      customerId: context?.customerId || null,
+    });
 
     const aiResult = await generateCodeBundleWithZai({ prompt, previous: previous || null, context: context || {} });
     const code = aiResult.code;
     const retryCount = aiResult.retryCount;
-    const builderSpec = codeToBuilderSpec(prompt, code, null);
-    const validSpec = builderSpecSchema.safeParse(builderSpec);
-    if (!validSpec.success) {
-      return res.status(500).json({ error: "code_generate_invalid_legacy_spec", issues: validSpec.error.flatten() });
+    if (!code || typeof code.html !== "string" || !code.html.trim()) {
+      throw new Error("code_generate_empty_html");
     }
 
     codeGenerationFailureCounter.delete(promptFailureKey(prompt));
+    logSite("info", "code_generate_success", {
+      traceId,
+      customerId: context?.customerId || null,
+      retryCount,
+      htmlLength: code.html.length,
+      cssLength: typeof code.css === "string" ? code.css.length : 0,
+      jsLength: typeof code.js === "string" ? code.js.length : 0,
+    });
     return res.json({
       code,
-      builderSpec: validSpec.data,
       meta: {
         engine: `zai-${ZAI_MODEL}`,
         generatedAt: new Date().toISOString(),
         aiEnabled: Boolean(ZAI_API_KEY),
         retryCount,
-        deprecated: "builderSpec is legacy. Use code {html,css,js}.",
       },
     });
   } catch (error) {
     const key = promptFailureKey(parsed.data.prompt);
     const failures = (codeGenerationFailureCounter.get(key) || 0) + 1;
     codeGenerationFailureCounter.set(key, failures);
+    logSite("error", "code_generate_failed", {
+      traceId,
+      promptKey: key,
+      failuresForPrompt: failures,
+      error: String(error),
+    });
     return res.status(502).json({
       error: "code_generation_failed",
       message: "Falha ao gerar o site com IA. Tente novamente.",
@@ -1360,14 +1383,27 @@ app.post("/v1/code/generate", async (req, res) => {
 app.post("/v1/publish/preview-code", async (req, res) => {
   const parsed = publishCodeSchema.safeParse(req.body || {});
   if (!parsed.success) {
+    logSite("warn", "preview_code_publish_invalid_payload", { issues: parsed.error.flatten() });
     return res.status(400).json({ error: "invalid_payload", issues: parsed.error.flatten() });
   }
 
   try {
     const slug = slugify(parsed.data.slug || parsed.data.orderId, `site-${Date.now()}`);
+    logSite("info", "preview_code_publish_start", {
+      slug,
+      orderId: parsed.data.orderId,
+      customerId: parsed.data.customerId || null,
+      htmlLength: parsed.data.code.html.length,
+    });
     const published = await publishPreviewCode(parsed.data, slug);
+    logSite("info", "preview_code_publish_success", {
+      slug,
+      orderId: parsed.data.orderId,
+      url: published.url,
+    });
     return res.status(201).json(published);
   } catch (error) {
+    logSite("error", "preview_code_publish_failed", { error: String(error) });
     return res.status(500).json({ error: "preview_code_publish_failed", message: String(error) });
   }
 });
@@ -1375,14 +1411,27 @@ app.post("/v1/publish/preview-code", async (req, res) => {
 app.post("/v1/publish/final-code", async (req, res) => {
   const parsed = publishCodeSchema.safeParse(req.body || {});
   if (!parsed.success) {
+    logSite("warn", "final_code_publish_invalid_payload", { issues: parsed.error.flatten() });
     return res.status(400).json({ error: "invalid_payload", issues: parsed.error.flatten() });
   }
 
   try {
     const slug = slugify(parsed.data.slug || parsed.data.orderId, `site-${Date.now()}`);
+    logSite("info", "final_code_publish_start", {
+      slug,
+      orderId: parsed.data.orderId,
+      customerId: parsed.data.customerId || null,
+      htmlLength: parsed.data.code.html.length,
+    });
     const published = await publishFinalCode(parsed.data, slug);
+    logSite("info", "final_code_publish_success", {
+      slug,
+      orderId: parsed.data.orderId,
+      url: published.url,
+    });
     return res.status(201).json(published);
   } catch (error) {
+    logSite("error", "final_code_publish_failed", { error: String(error) });
     return res.status(500).json({ error: "final_code_publish_failed", message: String(error) });
   }
 });

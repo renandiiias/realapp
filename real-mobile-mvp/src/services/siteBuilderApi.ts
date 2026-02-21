@@ -66,7 +66,6 @@ export type LiveSiteGenerateResponse = {
   slug: string;
   previewUrl: string;
   publicUrl: string | null;
-  builderSpec?: SiteBuilderSpec | null;
   code?: SiteCodeBundle | null;
   meta?: {
     engine?: string;
@@ -79,8 +78,7 @@ export type LiveSiteGenerateResponse = {
 
 export type LiveSitePublishRequest = {
   slug: string;
-  code?: SiteCodeBundle;
-  builderSpec?: SiteBuilderSpec;
+  code: SiteCodeBundle;
 };
 
 export type LiveSitePublishResponse = {
