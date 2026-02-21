@@ -15,7 +15,7 @@ const BOLT_VENDOR_PATH = path.resolve(__dirname, "../vendor/bolt_diy");
 const ZAI_BASE_URL = String(process.env.ZAI_BASE_URL || process.env.EXPO_PUBLIC_ZAI_BASE_URL || "https://api.z.ai/api/paas/v4").replace(/\/+$/, "");
 const ZAI_API_KEY = String(process.env.ZAI_API_KEY || process.env.EXPO_PUBLIC_ZAI_API_KEY || "").trim();
 const ZAI_MODEL = String(process.env.ZAI_MODEL || process.env.EXPO_PUBLIC_ZAI_MODEL || "glm-4.5-air").trim();
-const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 30000);
+const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 55000);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -782,10 +782,11 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
     "Keep the output concise enough to fit response limits. Prefer reusable CSS classes and avoid verbose repetitive markup.",
   ].join("\n");
 
-  const attempts = [{ temperature: 0.45 }, { temperature: 0.25 }];
+  const attempts = [{ temperature: 0.4 }];
 
   let lastError = null;
   let lastMissingSignals = [];
+  let lastValidCode = null;
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
     const attemptLabel = `attempt_${index + 1}`;
@@ -816,7 +817,7 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
           model: ZAI_MODEL,
           thinking: { type: "disabled" },
           temperature: attempt.temperature,
-          max_tokens: 3600,
+          max_tokens: 2800,
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
@@ -857,10 +858,21 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
       if (looksLikeLowQualityOutput(prompt, valid.data)) {
         throw new Error("zai_low_quality_output");
       }
+      lastValidCode = valid.data;
       const missingSignals = qualityMissingSignals(prompt, valid.data);
       if (missingSignals.length > 0) {
         lastMissingSignals = missingSignals;
-        throw new Error(`zai_quality_requirements_missing:${missingSignals.join(",")}`);
+        const hasThemeMismatch = missingSignals.some((item) => /tema\/estilo pedido/i.test(String(item)));
+        if (index < attempts.length - 1 && hasThemeMismatch) {
+          throw new Error(`zai_quality_requirements_missing:${missingSignals.join(",")}`);
+        }
+        logSite("warn", "code_generate_quality_soft_accept", {
+          attempt: index + 1,
+          customerId: context?.customerId || null,
+          traceId: context?.traceId || null,
+          missingSignals,
+        });
+        return { code: valid.data, retryCount: index, qualityWarnings: missingSignals };
       }
       return { code: valid.data, retryCount: index };
     } catch (error) {
@@ -875,6 +887,14 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
     } finally {
       clearTimeout(timeout);
     }
+  }
+  if (lastValidCode) {
+    logSite("warn", "code_generate_fallback_to_last_valid", {
+      customerId: context?.customerId || null,
+      traceId: context?.traceId || null,
+      missingSignals: lastMissingSignals,
+    });
+    return { code: lastValidCode, retryCount: attempts.length - 1, qualityWarnings: lastMissingSignals };
   }
   throw lastError || new Error("code_generation_failed");
 }

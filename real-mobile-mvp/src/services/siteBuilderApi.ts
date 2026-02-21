@@ -115,6 +115,17 @@ async function extractError(response: Response): Promise<string> {
   return fallback;
 }
 
+function toFriendlyNetworkError(error: unknown, fallback: string): string {
+  const raw = String(error || "").toLowerCase();
+  if (raw.includes("aborted") || raw.includes("timeout")) {
+    return "A geração demorou além do esperado. Tente novamente.";
+  }
+  if (raw.includes("network request failed") || raw.includes("networkerror") || raw.includes("load failed")) {
+    return "Erro de rede ao falar com o servidor. Verifique a conexão e tente novamente.";
+  }
+  return fallback;
+}
+
 function resolveQueueApiBaseUrl(): string {
   const queueBase = String(process.env.EXPO_PUBLIC_QUEUE_API_BASE_URL || "").trim().replace(/\/+$/, "");
   if (queueBase) return queueBase;
@@ -153,17 +164,26 @@ export async function generateLiveSite(payload: LiveSiteGenerateRequest): Promis
     throw new Error("API de fila não configurada para geração de site.");
   }
 
-  const response = await fetch(`${baseUrl}/v1/site/live/generate`, {
-    method: "POST",
-    headers: await getAuthHeaders(),
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 95000);
+  try {
+    const response = await fetch(`${baseUrl}/v1/site/live/generate`, {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(await extractError(response));
+    if (!response.ok) {
+      throw new Error(await extractError(response));
+    }
+
+    return response.json() as Promise<LiveSiteGenerateResponse>;
+  } catch (error) {
+    throw new Error(toFriendlyNetworkError(error, "Falha ao gerar site com IA."));
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return response.json() as Promise<LiveSiteGenerateResponse>;
 }
 
 export async function publishLiveSite(payload: LiveSitePublishRequest): Promise<LiveSitePublishResponse> {
