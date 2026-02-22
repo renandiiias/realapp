@@ -12,8 +12,6 @@ import { Field } from "../../src/ui/components/Field";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body, Title } from "../../src/ui/components/Typography";
 import { SPACING, ANIMATION_DURATION } from "../../src/utils/constants";
-import { analyzeAdsBusinessBrief } from "../../src/ai/adsIntakeAssistant";
-import { buildErrorFingerprint, makeAdsTraceId, sendAdsClientLog } from "../../src/services/adsWizardDebugLog";
 
 type Step =
   | { id: "welcome"; type: "message" }
@@ -77,6 +75,22 @@ type LocalMedia = {
   mimeType: string;
   sizeBytes: number;
   kind: "image" | "video";
+};
+
+type DebugLevel = "info" | "warn" | "error";
+
+type AdsBusinessBriefPrefill = Partial<ConversationData>;
+
+type AdsBusinessBriefInput = {
+  brief: string;
+  currentData: ConversationData;
+  companyContext?: {
+    companyName?: string;
+    offerSummary?: string;
+    mainDifferential?: string;
+    primarySalesChannel?: string;
+    marketSegment?: string;
+  };
 };
 
 function normalizeE164(raw: string): string | null {
@@ -795,6 +809,180 @@ function getPlaceholder(key: keyof ConversationData): string {
     style: "",
   };
   return placeholders[key];
+}
+
+const ZAI_BASE_URL = process.env.EXPO_PUBLIC_ZAI_BASE_URL?.replace(/\/+$/, "") || "https://api.z.ai/api/paas/v4";
+const ZAI_API_KEY = process.env.EXPO_PUBLIC_ZAI_API_KEY;
+const ZAI_MODEL = process.env.EXPO_PUBLIC_ZAI_MODEL || "glm-4.5-air";
+
+function makeAdsTraceId(prefix = "ads"): string {
+  const rand = Math.random().toString(16).slice(2, 10);
+  return `${prefix}_${Date.now()}_${rand}`;
+}
+
+function maskLogValue(value: string): string {
+  let sanitized = value;
+  sanitized = sanitized.replace(/(bearer\s+)[a-z0-9._-]+/gi, "$1***");
+  sanitized = sanitized.replace(/([?&](?:token|key|password|pwd|secret)=)[^&\s]+/gi, "$1***");
+  sanitized = sanitized.replace(/\b\d{10,15}\b/g, (m) => `${m.slice(0, 2)}***${m.slice(-2)}`);
+  return sanitized;
+}
+
+function sanitizeLogMeta(value: unknown, keyHint = ""): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (/(token|authorization|password|cookie|secret|api[_-]?key)/i.test(keyHint)) return "***";
+    return maskLogValue(value).slice(0, 500);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeLogMeta(item, keyHint));
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = sanitizeLogMeta(item, key);
+    }
+    return out;
+  }
+  return String(value).slice(0, 200);
+}
+
+function buildErrorFingerprint(error: unknown, context = ""): string {
+  const message = error instanceof Error ? `${error.name}|${error.message}|${error.stack || ""}` : String(error);
+  const raw = `${context}|${message}`.slice(0, 2000);
+  let hash = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash = (hash << 5) - hash + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  return `ads_${Math.abs(hash)}`;
+}
+
+async function sendAdsClientLog(params: {
+  baseUrl: string;
+  traceId: string;
+  stage: string;
+  event: string;
+  level?: DebugLevel;
+  meta?: Record<string, unknown>;
+}): Promise<void> {
+  const safeBase = params.baseUrl.replace(/\/+$/, "");
+  if (!safeBase) return;
+  const payload = {
+    trace_id: params.traceId,
+    stage: params.stage,
+    event: params.event,
+    level: params.level ?? "info",
+    ts_utc: new Date().toISOString(),
+    meta: sanitizeLogMeta(params.meta ?? {}, "meta"),
+  };
+  try {
+    await fetch(`${safeBase}/v1/debug/client-events`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Logging must never block the wizard.
+  }
+}
+
+function normalizeBudget(raw: unknown): ConversationData["budget"] | undefined {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "ate_500" || value === "500_1500" || value === "1500_5000" || value === "5000_mais") return value;
+  if (/5000|5\.000|5k/.test(value)) return "5000_mais";
+  if (/1500|1\.500|2\.000|3\.000|4\.000/.test(value)) return "1500_5000";
+  if (/500|1000|1\.000/.test(value)) return "500_1500";
+  return undefined;
+}
+
+function normalizeStyle(raw: unknown): ConversationData["style"] | undefined {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "antes_depois" || value === "problema_solucao" || value === "prova_social") return value;
+  if (value.includes("antes") || value.includes("depois")) return "antes_depois";
+  if (value.includes("problema") || value.includes("solu")) return "problema_solucao";
+  if (value.includes("prova") || value.includes("depoimento")) return "prova_social";
+  return undefined;
+}
+
+function normalizeFreeText(raw: unknown): string | undefined {
+  const value = String(raw ?? "").replace(/\s+/g, " ").trim();
+  if (!value) return undefined;
+  return value.slice(0, 220);
+}
+
+function extractJson(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  const firstBrace = raw.indexOf("{");
+  const lastBrace = raw.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return raw.slice(firstBrace, lastBrace + 1);
+  }
+  return raw.trim();
+}
+
+function parsePrefill(raw: string): AdsBusinessBriefPrefill {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as Partial<Record<keyof ConversationData, unknown>>;
+    return {
+      objective: normalizeFreeText(parsed.objective),
+      offer: normalizeFreeText(parsed.offer),
+      budget: normalizeBudget(parsed.budget),
+      audience: normalizeFreeText(parsed.audience),
+      region: normalizeFreeText(parsed.region),
+      destinationWhatsApp: normalizeFreeText(parsed.destinationWhatsApp),
+      style: normalizeStyle(parsed.style),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function heuristicPrefill(brief: string): AdsBusinessBriefPrefill {
+  const oneLine = brief.replace(/\s+/g, " ").trim();
+  const matchPhone = oneLine.match(/(\+?\d[\d\s().-]{8,}\d)/);
+  return {
+    objective: oneLine ? `Gerar mais conversas no WhatsApp para ${oneLine.slice(0, 65)}` : undefined,
+    destinationWhatsApp: matchPhone ? matchPhone[1].replace(/\s+/g, "") : undefined,
+  };
+}
+
+async function analyzeAdsBusinessBrief(input: AdsBusinessBriefInput): Promise<AdsBusinessBriefPrefill> {
+  if (!ZAI_API_KEY) return heuristicPrefill(input.brief);
+  const response = await fetch(`${ZAI_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${ZAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: ZAI_MODEL,
+      temperature: 0.1,
+      max_tokens: 380,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você recebe uma descrição de negócio para campanha de WhatsApp. Responda SOMENTE JSON com estes campos opcionais: objective, offer, budget, audience, region, destinationWhatsApp, style. Regras: budget deve ser um dos códigos [ate_500,500_1500,1500_5000,5000_mais]; style deve ser um dos códigos [antes_depois,problema_solucao,prova_social]. Se não souber um campo, omita.",
+        },
+        {
+          role: "user",
+          content: [
+            `Brief do cliente: ${input.brief}`,
+            `Dados já preenchidos: ${JSON.stringify(input.currentData)}`,
+            `Contexto da empresa: ${JSON.stringify(input.companyContext ?? {})}`,
+          ].join("\n"),
+        },
+      ],
+    }),
+  });
+  if (!response.ok) return heuristicPrefill(input.brief);
+  const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = payload.choices?.[0]?.message?.content?.trim() || "";
+  if (!content) return heuristicPrefill(input.brief);
+  const parsed = parsePrefill(content);
+  if (Object.keys(parsed).length === 0) return heuristicPrefill(input.brief);
+  return parsed;
 }
 
 const styles = StyleSheet.create({
