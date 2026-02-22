@@ -5,6 +5,7 @@ import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform } from "react-native";
 import { createManualEditorSession, fetchVideo, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
 import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
@@ -41,9 +42,9 @@ function hasAcceptedExtension(name: string): boolean {
 function pickerErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   if (/PHPhotosErrorDomain/i.test(raw) && /3164/.test(raw)) {
-    return "Nao consegui abrir esse video da galeria. Tente baixar o arquivo no iPhone (se estiver no iCloud) ou escolha outro video.";
+    return "Nao consegui abrir esse video da galeria. Tente em 'Escolher arquivo (fallback)' para videos do iCloud.";
   }
-  return "Falha ao abrir video da galeria. Tente novamente.";
+  return "Falha ao abrir video. Use 'Escolher arquivo (fallback)' no iPhone.";
 }
 
 function isIosPhotos3164(error: unknown): boolean {
@@ -165,6 +166,17 @@ export default function VideoEditorManualHubScreen() {
     }
   };
 
+  const pickVideoSmart = async () => {
+    if (Platform.OS === "ios") {
+      const fallbackOk = await pickVideoWithDocumentPicker();
+      if (!fallbackOk) {
+        await pickVideoFromLibrary();
+      }
+      return;
+    }
+    await pickVideoFromLibrary();
+  };
+
   const submitManualSource = async () => {
     if (!picked || submitting || !videoApiBase) return;
     setSubmitting(true);
@@ -226,12 +238,15 @@ export default function VideoEditorManualHubScreen() {
 
           <View style={styles.block}>
             <Text style={styles.blockTitle}>Escolha o video</Text>
-            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoFromLibrary()} disabled={submitting}>
+            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting}>
               <Ionicons name="play-circle" size={22} color="#0c2106" />
               <Text style={styles.greenButtonText}>Enviar video</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.secondary} activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()} disabled={submitting}>
               <Text style={styles.secondaryText}>Escolher arquivo (fallback)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondary} activeOpacity={0.9} onPress={() => void pickVideoFromLibrary()} disabled={submitting}>
+              <Text style={styles.secondaryText}>Tentar galeria direta</Text>
             </TouchableOpacity>
             {picked ? (
               <Text style={styles.meta}>
