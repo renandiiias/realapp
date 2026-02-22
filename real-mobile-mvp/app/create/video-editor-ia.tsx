@@ -6,24 +6,17 @@ import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
-import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
+import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
+import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
 const MAX_VIDEO_SECONDS = 300;
 const ACCEPTED_EXTENSIONS = [".mp4", ".mov", ".m4v"];
+
+type FunnelStep = "upload" | "mode" | "style" | "processing" | "done";
 
 type PickedVideo = {
   uri: string;
@@ -84,23 +77,27 @@ async function launchLibraryWithTimeout(timeoutMs = 12000): Promise<any> {
       preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
       videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
     }),
-    new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs),
-    ),
+    new Promise<any>((_, reject) => setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs)),
   ]);
 }
 
 export default function VideoEditorIaScreen() {
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("ia"));
+  const [funnelStep, setFunnelStep] = useState<FunnelStep>("upload");
+
   const [pickingVideo, setPickingVideo] = useState(false);
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
+
+  const [subtitleFont, setSubtitleFont] = useState("Montserrat");
+  const [subtitleColor, setSubtitleColor] = useState("#57ef2f");
 
   const [video, setVideo] = useState<VideoItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [magicTick, setMagicTick] = useState(0);
 
   const videoApiBase = useMemo(() => {
     const raw = process.env.EXPO_PUBLIC_VIDEO_EDITOR_API_BASE_URL?.trim() ?? "";
@@ -130,7 +127,17 @@ export default function VideoEditorIaScreen() {
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [hasRemoteEditor, video, videoApiBase]);
+  }, [hasRemoteEditor, video, videoApiBase, flowTraceId]);
+
+  useEffect(() => {
+    if (video?.status === "COMPLETE") setFunnelStep("done");
+  }, [video?.status]);
+
+  useEffect(() => {
+    if (!(submitting || video?.status === "QUEUED" || video?.status === "PROCESSING")) return;
+    const timer = setInterval(() => setMagicTick((v) => v + 1), 900);
+    return () => clearInterval(timer);
+  }, [submitting, video?.status]);
 
   const applyPicked = (
     asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null },
@@ -150,6 +157,7 @@ export default function VideoEditorIaScreen() {
         size_bytes: asset.fileSize ?? null,
       },
     });
+
     if (durationSeconds && durationSeconds > MAX_VIDEO_SECONDS) {
       setError("Use um video de ate 5 minutos.");
       return;
@@ -170,6 +178,7 @@ export default function VideoEditorIaScreen() {
     });
     setVideo(null);
     setError(null);
+    setFunnelStep("mode");
   };
 
   const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
@@ -207,31 +216,6 @@ export default function VideoEditorIaScreen() {
       return true;
     } catch (pickError) {
       const raw = pickError instanceof Error ? pickError.message : String(pickError ?? "");
-      if (/Different document picking in progress/i.test(raw)) {
-        await new Promise((r) => setTimeout(r, 700));
-        try {
-          const retry = await DocumentPicker.getDocumentAsync({
-            type: "video/*",
-            multiple: false,
-            copyToCacheDirectory: true,
-          });
-          if (!retry.canceled && retry.assets?.[0]) {
-            const file = retry.assets[0];
-            applyPicked(
-              {
-                uri: file.uri,
-                fileName: file.name,
-                mimeType: file.mimeType,
-                fileSize: file.size,
-              },
-              flowTraceId,
-            );
-            return true;
-          }
-        } catch {
-          // noop
-        }
-      }
       setError(pickerErrorMessage(pickError));
       void sendVideoClientLog({
         baseUrl: videoApiBase,
@@ -251,13 +235,9 @@ export default function VideoEditorIaScreen() {
     setError(null);
     const nextTraceId = makeClientTraceId("ia");
     setFlowTraceId(nextTraceId);
+
     try {
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: nextTraceId,
-        stage: "picker",
-        event: "image_library_permission_request_start",
-      });
+      void sendVideoClientLog({ baseUrl: videoApiBase, traceId: nextTraceId, stage: "picker", event: "image_library_permission_request_start" });
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       void sendVideoClientLog({
         baseUrl: videoApiBase,
@@ -271,33 +251,16 @@ export default function VideoEditorIaScreen() {
         return;
       }
 
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: nextTraceId,
-        stage: "picker",
-        event: "image_library_open_start",
-      });
+      void sendVideoClientLog({ baseUrl: videoApiBase, traceId: nextTraceId, stage: "picker", event: "image_library_open_start" });
       const result = await launchLibraryWithTimeout();
-      if (result.canceled) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: nextTraceId,
-          stage: "picker",
-          event: "image_library_canceled",
-        });
-        return;
-      }
+      if (result.canceled) return;
+
       if (!result.assets?.[0]) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: nextTraceId,
-          stage: "picker",
-          event: "image_library_empty_assets_fallback_document_picker",
-        });
         const fallbackOk = await pickVideoWithDocumentPicker();
         if (!fallbackOk) setError("Nao foi possivel carregar da galeria. Tente novamente pelo fallback.");
         return;
       }
+
       applyPicked(result.assets[0], nextTraceId);
     } catch (pickError) {
       void sendVideoClientLog({
@@ -329,6 +292,13 @@ export default function VideoEditorIaScreen() {
     if (!picked || submitting || !videoApiBase) return;
     setSubmitting(true);
     setError(null);
+    setFunnelStep("processing");
+
+    const styleInstruction =
+      aiMode === "cut_captions"
+        ? `Legendas premium: fonte=${subtitleFont}; cor=${subtitleColor}; contraste_alto=true; legibilidade_maxima=true`
+        : "";
+
     try {
       void sendVideoClientLog({
         baseUrl: videoApiBase,
@@ -341,29 +311,24 @@ export default function VideoEditorIaScreen() {
           file_name: picked.name,
           mime: picked.mimeType,
           size_bytes: picked.sizeBytes ?? null,
+          subtitle_font: subtitleFont,
+          subtitle_color: subtitleColor,
         },
       });
+
       const created = await submitVideoEditJob({
         baseUrl: videoApiBase,
-        file: {
-          uri: picked.uri,
-          name: picked.name,
-          type: picked.mimeType,
-        },
+        file: { uri: picked.uri, name: picked.name, type: picked.mimeType },
         mode: aiMode,
+        instructions: styleInstruction,
         traceId: flowTraceId,
       });
+
       setVideo(created.video);
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "upload",
-        event: "submit_video_edit_ok",
-        meta: { video_id: created.video.id, compatibility_mode: created.compatibilityMode },
-      });
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Nao foi possivel iniciar a edicao.";
       setError(humanizeVideoError(message));
+      setFunnelStep(aiMode === "cut_captions" ? "style" : "mode");
       void sendVideoClientLog({
         baseUrl: videoApiBase,
         traceId: flowTraceId,
@@ -449,20 +414,6 @@ export default function VideoEditorIaScreen() {
 
   const stage = stageFromVideo(video);
   const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
-  const statusLabel = (() => {
-    if (!video) {
-      return picked ? "Video carregado. O ritual esta pronto para comecar." : "Aguardando seu video para acender o ritual.";
-    }
-    if (video.status === "QUEUED") return "Seu video entrou no portal. Preparando os feiticos da IA.";
-    if (video.status === "PROCESSING") {
-      if (progress < 0.35) return "Invocando cortes inteligentes e lendo o ritmo da cena.";
-      if (progress < 0.75) return "Lapidando os trechos para deixar o video mais dinamico.";
-      if (progress < 0.95) return "Encantando com legenda e acabamento final.";
-      return "Quase pronto. Manifestando a versao final.";
-    }
-    if (video.status === "COMPLETE") return "Magia concluida. Seu video esta pronto para brilhar.";
-    return "A magia falhou desta vez. Ajuste e tente novamente.";
-  })();
 
   const stageColor = (key: string) => {
     if (stage === "failed") return key === "failed" ? "#ff6f6f" : "#7f8695";
@@ -471,71 +422,125 @@ export default function VideoEditorIaScreen() {
     return "#9ba4b5";
   };
 
+  const magicMessages = [
+    "Lendo ritmo e energia do video...",
+    "Cortando pausas com inteligencia...",
+    "Refinando transicoes para mais impacto...",
+    "Aplicando legenda no estilo escolhido...",
+    "Finalizando render com qualidade social...",
+  ];
+
   return (
     <Screen plain style={styles.screen}>
       <LinearGradient colors={["#07090f", "#0a0d17", "#07090f"]} style={styles.bg}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+        <View style={styles.bgOrnamentA} />
+        <View style={styles.bgOrnamentB} />
+
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" showsVerticalScrollIndicator={false}>
           <View style={styles.header}>
-            <Text style={styles.title}>Edite de forma facil com IA!</Text>
-            <Text style={styles.subtitle}>Envie seu video e escolha como a IA deve edita-lo de forma rapida e automatica.</Text>
+            <Text style={styles.title}>Edicao com IA, nivel pro</Text>
+            <Text style={styles.subtitle}>Fluxo inteligente para gerar resultado rapido, bonito e pronto para publicar.</Text>
           </View>
 
-          <View style={styles.block}>
-            <Text style={styles.blockTitle}>Escolha o video</Text>
-            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting || pickingVideo}>
-              {pickingVideo ? <ActivityIndicator color="#0c2106" /> : <Ionicons name="play-circle" size={23} color="#0c2106" />}
-              <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : pickingVideo ? "Abrindo galeria..." : "Enviar video"}</Text>
-            </TouchableOpacity>
-            {picked ? (
-              <Text style={styles.meta}>Arquivo: {picked.name} · {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(1)}s` : "duracao nao detectada"}</Text>
-            ) : null}
+          <View style={styles.funnelRow}>
+            <Text style={[styles.funnelStep, funnelStep === "upload" ? styles.funnelStepActive : null]}>1 Upload</Text>
+            <Text style={[styles.funnelStep, funnelStep === "mode" ? styles.funnelStepActive : null]}>2 Modo</Text>
+            <Text style={[styles.funnelStep, funnelStep === "style" ? styles.funnelStepActive : null]}>3 Legenda</Text>
+            <Text style={[styles.funnelStep, funnelStep === "processing" ? styles.funnelStepActive : null]}>4 Magia</Text>
+            <Text style={[styles.funnelStep, funnelStep === "done" ? styles.funnelStepActive : null]}>5 Pronto</Text>
           </View>
 
-          <View style={styles.block}>
-            <Text style={styles.blockTitle}>Escolha o tipo de edicao</Text>
-            <View style={styles.modeRow}>
-              <TouchableOpacity style={[styles.modeChip, aiMode === "cut" ? styles.modeChipActive : null]} onPress={() => setAiMode("cut")}>
-                <Text style={[styles.modeChipText, aiMode === "cut" ? styles.modeChipTextActive : null]}>Corte</Text>
+          {(funnelStep === "upload" || !picked) && (
+            <View style={styles.block}>
+              <Text style={styles.blockTitle}>Escolha o video</Text>
+              <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting || pickingVideo}>
+                {pickingVideo ? <ActivityIndicator color="#0c2106" /> : <Ionicons name="play-circle" size={23} color="#0c2106" />}
+                <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : pickingVideo ? "Abrindo galeria..." : "Enviar video"}</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modeChip, aiMode === "cut_captions" ? styles.modeChipActive : null]}
-                onPress={() => setAiMode("cut_captions")}
-              >
-                <Text style={[styles.modeChipText, aiMode === "cut_captions" ? styles.modeChipTextActive : null]}>Corte + Legenda</Text>
-              </TouchableOpacity>
+              {picked ? <Text style={styles.meta}>Arquivo: {picked.name}</Text> : null}
             </View>
-            <Text style={styles.help}>A IA remove pausas e adiciona legendas automaticas no video.</Text>
-          </View>
+          )}
 
-          <View style={styles.block}>
-            <Text style={styles.blockTitle}>Ritual da edicao</Text>
-            <Text style={styles.statusText}>{statusLabel}</Text>
-            {video?.status === "PROCESSING" ? (
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${Math.max(2, Math.round(progress * 100))}%` }]} />
+          {picked && funnelStep === "mode" && (
+            <View style={styles.block}>
+              <Text style={styles.blockTitle}>Escolha o tipo de edicao</Text>
+              <View style={styles.modeRow}>
+                <TouchableOpacity style={[styles.modeChip, aiMode === "cut" ? styles.modeChipActive : null]} onPress={() => setAiMode("cut")}>
+                  <Text style={[styles.modeChipText, aiMode === "cut" ? styles.modeChipTextActive : null]}>Corte</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.modeChip, aiMode === "cut_captions" ? styles.modeChipActive : null]} onPress={() => setAiMode("cut_captions")}>
+                  <Text style={[styles.modeChipText, aiMode === "cut_captions" ? styles.modeChipTextActive : null]}>Corte + Legendas</Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
-            <View style={styles.timeline}>
-              <Text style={[styles.timelineText, { color: stageColor("prepare") }]}>Invocar</Text>
-              <Text style={[styles.timelineText, { color: stageColor("edit") }]}>Lapidar</Text>
-              <Text style={[styles.timelineText, { color: stageColor("deliver") }]}>Encantar</Text>
-              <Text style={[styles.timelineText, { color: stageColor("done") }]}>Manifestar</Text>
+              <Text style={styles.help}>Corte + legendas abre configuracao de estilo antes do processamento.</Text>
+              <TouchableOpacity
+                style={styles.cta}
+                onPress={() => {
+                  if (aiMode === "cut_captions") {
+                    setFunnelStep("style");
+                  } else {
+                    void submit();
+                  }
+                }}
+              >
+                <MaterialCommunityIcons name="arrow-right-circle-outline" size={24} color="#0e2b09" />
+                <Text style={styles.ctaText}>{aiMode === "cut_captions" ? "Continuar" : "Iniciar corte com IA"}</Text>
+                <Ionicons name="chevron-forward" size={22} color="#0e2b09" />
+              </TouchableOpacity>
             </View>
-            {video?.status === "PROCESSING" ? <Text style={styles.meta}>{Math.max(1, Math.round(progress * 100))}% concluido</Text> : null}
-          </View>
+          )}
 
-          <TouchableOpacity
-            style={[styles.cta, !picked || submitting || !hasRemoteEditor ? styles.ctaDisabled : null]}
-            activeOpacity={0.9}
-            onPress={() => void submit()}
-            disabled={!picked || submitting || !hasRemoteEditor}
-          >
-            {submitting ? <ActivityIndicator color="#0e2b09" /> : <MaterialCommunityIcons name="robot-outline" size={25} color="#0e2b09" />}
-            <Text style={styles.ctaText}>{submitting ? "Iniciando..." : "Iniciar edicao com IA"}</Text>
-            <Ionicons name="chevron-forward" size={24} color="#0e2b09" />
-          </TouchableOpacity>
+          {picked && funnelStep === "style" && aiMode === "cut_captions" && (
+            <View style={styles.block}>
+              <Text style={styles.blockTitle}>Escolha o estilo das legendas</Text>
 
-          {video?.status === "COMPLETE" ? (
+              <Text style={styles.sectionLabel}>Fonte</Text>
+              <View style={styles.choiceWrap}>
+                {["Montserrat", "Poppins", "BebasNeue", "DM Serif Display"].map((font) => (
+                  <TouchableOpacity key={font} style={[styles.choiceChip, subtitleFont === font ? styles.choiceChipActive : null]} onPress={() => setSubtitleFont(font)}>
+                    <Text style={[styles.choiceChipText, subtitleFont === font ? styles.choiceChipTextActive : null]}>{font}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.sectionLabel}>Cor</Text>
+              <View style={styles.colorRow}>
+                {["#57ef2f", "#ffffff", "#ffd54a", "#66d9ff", "#ff7ad9"].map((color) => (
+                  <TouchableOpacity key={color} style={[styles.colorDot, { backgroundColor: color }, subtitleColor === color ? styles.colorDotActive : null]} onPress={() => setSubtitleColor(color)} />
+                ))}
+              </View>
+
+              <View style={styles.captionPreview}>
+                <Text style={[styles.captionPreviewText, { color: subtitleColor }]}>Legenda premium no seu estilo</Text>
+              </View>
+
+              <TouchableOpacity style={styles.cta} onPress={() => void submit()}>
+                {submitting ? <ActivityIndicator color="#0e2b09" /> : <MaterialCommunityIcons name="magic-staff" size={24} color="#0e2b09" />}
+                <Text style={styles.ctaText}>Iniciar edicao com IA</Text>
+                <Ionicons name="chevron-forward" size={22} color="#0e2b09" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {(funnelStep === "processing" || video?.status === "QUEUED" || video?.status === "PROCESSING") && (
+            <View style={styles.magicBlock}>
+              <Text style={styles.blockTitle}>Status da edicao</Text>
+              <Text style={styles.magicTitle}>A IA esta trabalhando no seu video</Text>
+              <Text style={styles.statusText}>{magicMessages[magicTick % magicMessages.length]}</Text>
+              <View style={styles.magicProgressOuter}>
+                <View style={[styles.magicProgressInner, { width: `${Math.max(8, Math.round((progress || (0.12 + ((magicTick % 8) * 0.09))) * 100))}%` }]} />
+              </View>
+              <View style={styles.timeline}>
+                <Text style={[styles.timelineText, { color: stageColor("prepare") }]}>Preparar</Text>
+                <Text style={[styles.timelineText, { color: stageColor("edit") }]}>Editar</Text>
+                <Text style={[styles.timelineText, { color: stageColor("deliver") }]}>Entregar</Text>
+                <Text style={[styles.timelineText, { color: stageColor("done") }]}>Pronto</Text>
+              </View>
+              <Text style={styles.meta}>{video?.status === "PROCESSING" ? `${Math.max(1, Math.round(progress * 100))}% concluido` : "Aguardando pipeline..."}</Text>
+            </View>
+          )}
+
+          {(video?.status === "COMPLETE" || funnelStep === "done") && (
             <View style={styles.completeActions}>
               <TouchableOpacity style={styles.secondaryBtn} onPress={() => void openViewer()}>
                 <Text style={styles.secondaryBtnText}>Ver video no app</Text>
@@ -543,8 +548,18 @@ export default function VideoEditorIaScreen() {
               <TouchableOpacity style={styles.secondaryBtn} onPress={() => void downloadInsideApp()} disabled={Boolean(downloadingUrl)}>
                 <Text style={styles.secondaryBtnText}>{downloadingUrl ? "Baixando..." : "Baixar no app"}</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={() => {
+                  setPicked(null);
+                  setVideo(null);
+                  setFunnelStep("upload");
+                }}
+              >
+                <Text style={styles.secondaryBtnText}>Novo video</Text>
+              </TouchableOpacity>
             </View>
-          ) : null}
+          )}
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
           {!hasRemoteEditor ? <Text style={styles.error}>Editor de video indisponivel neste ambiente.</Text> : null}
@@ -571,6 +586,24 @@ export default function VideoEditorIaScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   bg: { flex: 1 },
+  bgOrnamentA: {
+    position: "absolute",
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: "rgba(87,239,47,0.08)",
+    top: -90,
+    right: -80,
+  },
+  bgOrnamentB: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(63,138,255,0.08)",
+    bottom: 80,
+    left: -70,
+  },
   content: {
     paddingHorizontal: 16,
     paddingTop: 14,
@@ -592,6 +625,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     fontFamily: realTheme.fonts.bodyRegular,
+  },
+  funnelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(11,16,26,0.8)",
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    gap: 6,
+  },
+  funnelStep: {
+    color: "#8f98aa",
+    fontSize: 11,
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  funnelStepActive: {
+    color: "#57ef2f",
   },
   block: {
     borderRadius: 23,
@@ -620,19 +673,8 @@ const styles = StyleSheet.create({
   },
   greenButtonText: {
     color: "#0c2106",
-    fontSize: 24,
+    fontSize: 18,
     fontFamily: realTheme.fonts.bodyBold,
-    letterSpacing: -0.3,
-  },
-  fallback: {
-    color: "#a7b1c1",
-    fontSize: 12,
-    textDecorationLine: "underline",
-  },
-  meta: {
-    color: "#93a0b5",
-    fontSize: 12,
-    lineHeight: 17,
   },
   modeRow: {
     flexDirection: "row",
@@ -640,46 +682,118 @@ const styles = StyleSheet.create({
   },
   modeChip: {
     flex: 1,
-    minHeight: 42,
     borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(24,30,42,0.92)",
+    minHeight: 48,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    backgroundColor: "rgba(22,27,39,0.92)",
   },
   modeChipActive: {
-    backgroundColor: "rgba(87,239,47,0.24)",
-    borderColor: "rgba(87,239,47,0.72)",
+    borderColor: "rgba(87,239,47,0.9)",
+    backgroundColor: "rgba(68,214,39,0.2)",
   },
   modeChipText: {
-    color: "#c6cdd9",
+    color: "#cad3e2",
+    fontSize: 17,
     fontFamily: realTheme.fonts.bodySemiBold,
   },
   modeChipTextActive: {
-    color: "#ddffe0",
+    color: "#ecfff2",
   },
   help: {
-    color: "#a7b0be",
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 2,
+    color: "#a8b1bf",
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: realTheme.fonts.bodyRegular,
   },
-  statusText: {
-    color: "#dce4f0",
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  progressTrack: {
+  sectionLabel: {
+    color: "#dce4f1",
+    fontSize: 14,
+    fontFamily: realTheme.fonts.bodySemiBold,
     marginTop: 4,
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(31,38,53,0.95)",
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.13)",
   },
-  progressFill: {
+  choiceWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  choiceChip: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(20,26,38,0.88)",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  choiceChipActive: {
+    borderColor: "rgba(87,239,47,0.8)",
+    backgroundColor: "rgba(68,214,39,0.16)",
+  },
+  choiceChipText: {
+    color: "#c9d2e2",
+    fontSize: 12,
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  choiceChipTextActive: {
+    color: "#ecfff2",
+  },
+  colorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  colorDot: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  colorDotActive: {
+    borderColor: "#ffffff",
+    transform: [{ scale: 1.08 }],
+  },
+  captionPreview: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(13,18,29,0.95)",
+    minHeight: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  captionPreviewText: {
+    fontSize: 16,
+    fontFamily: realTheme.fonts.bodyBold,
+  },
+  magicBlock: {
+    borderRadius: 23,
+    backgroundColor: "rgba(11,16,25,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(87,239,47,0.35)",
+    padding: 14,
+    gap: 8,
+    shadowColor: "#57ef2f",
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  magicTitle: {
+    color: "#ecfff2",
+    fontSize: 20,
+    lineHeight: 24,
+    fontFamily: realTheme.fonts.bodyBold,
+  },
+  magicProgressOuter: {
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    overflow: "hidden",
+  },
+  magicProgressInner: {
     height: "100%",
     borderRadius: 999,
     backgroundColor: "#57ef2f",
@@ -693,63 +807,76 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: realTheme.fonts.bodySemiBold,
   },
+  statusText: {
+    color: "#cfd8e7",
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
   cta: {
+    marginTop: 4,
     borderRadius: 999,
+    minHeight: 54,
     backgroundColor: "#57ef2f",
-    minHeight: 56,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    shadowColor: "#53ef2b",
-    shadowOpacity: 0.45,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
+    paddingHorizontal: 14,
   },
   ctaDisabled: {
     opacity: 0.5,
   },
   ctaText: {
-    color: "#0d2507",
-    fontSize: 18,
+    color: "#0e2b09",
+    fontSize: 20,
     fontFamily: realTheme.fonts.bodyBold,
   },
   completeActions: {
-    gap: 8,
+    gap: 10,
+    marginBottom: 8,
   },
   secondaryBtn: {
-    borderRadius: 12,
+    borderRadius: 14,
+    minHeight: 48,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    backgroundColor: "rgba(15,19,27,0.95)",
-    minHeight: 46,
+    borderColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(20,25,36,0.95)",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
   },
   secondaryBtnText: {
-    color: "#dce3ed",
+    color: "#d9e2f1",
+    fontSize: 16,
     fontFamily: realTheme.fonts.bodySemiBold,
   },
-  error: {
-    color: "#ff7f7f",
+  meta: {
+    color: "#95a5bb",
     fontSize: 12,
     lineHeight: 17,
+    fontFamily: realTheme.fonts.bodyRegular,
+  },
+  error: {
+    color: "#ff8f8f",
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: realTheme.fonts.bodySemiBold,
   },
   viewerWrap: {
     flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: "#07090f",
     justifyContent: "center",
+    padding: 16,
+    gap: 14,
   },
   viewerPlayer: {
     width: "100%",
     aspectRatio: 9 / 16,
     backgroundColor: "#000",
+    borderRadius: 16,
   },
   viewerActions: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
     gap: 10,
-    backgroundColor: "rgba(0,0,0,0.78)",
   },
 });
