@@ -32,14 +32,14 @@ export default function VideoEditorHubScreen() {
             </LinearGradient>
           </TouchableOpacity>
 
-          <TouchableOpacity activeOpacity={0.92} onPress={() => router.push("/create/video-editor-manual-hub")}>
+          <TouchableOpacity activeOpacity={0.92} onPress={() => router.push("/create/video-editor-manual")}>
             <View style={styles.choiceCard}>
               <LinearGradient colors={["#161a25", "#0f1218"]} style={styles.iconWrap}>
                 <MaterialCommunityIcons name="movie-edit-outline" size={30} color="#d8dee8" />
               </LinearGradient>
               <View style={styles.choiceBody}>
                 <Text style={styles.choiceTitle}>Edicao manual</Text>
-                <Text style={styles.choiceText}>Voce personaliza o corte final no editor manual.</Text>
+                <Text style={styles.choiceText}>Editor nativo no app, sem WebView e sem etapa intermediaria.</Text>
               </View>
               <Ionicons name="chevron-forward" size={24} color="#c4cad6" />
             </View>

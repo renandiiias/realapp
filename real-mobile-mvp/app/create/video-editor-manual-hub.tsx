@@ -281,7 +281,7 @@ export default function VideoEditorManualHubScreen() {
               onPress={() => void openManualEditor()}
               disabled={!video || video.status !== "COMPLETE" || openingEditor}
             >
-              {openingEditor ? <ActivityIndicator color="#0d2507" /> : <MaterialCommunityIcons name="wand-sparkles" size={24} color="#0d2507" />}
+              {openingEditor ? <ActivityIndicator color="#0d2507" /> : <MaterialCommunityIcons name="magic-staff" size={24} color="#0d2507" />}
               <Text style={styles.ctaText}>{openingEditor ? "Abrindo..." : "Abrir editor visual"}</Text>
             </TouchableOpacity>
           </View>
