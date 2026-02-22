@@ -16,7 +16,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Platform } from "react-native";
 import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
 import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
 import { realTheme } from "../../src/theme/realTheme";
@@ -48,9 +47,9 @@ function makeSafeName(name: string): string {
 function pickerErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error ?? "");
   if (/PHPhotosErrorDomain/i.test(raw) && /3164/.test(raw)) {
-    return "Nao consegui abrir esse video da galeria. Tente em 'Escolher arquivo (fallback)' para videos do iCloud.";
+    return "Nao consegui abrir esse video da galeria agora. Tente novamente em alguns segundos.";
   }
-  return "Falha ao abrir video. Use 'Escolher arquivo (fallback)' no iPhone.";
+  return "Falha ao abrir video da galeria.";
 }
 
 function isIosPhotos3164(error: unknown): boolean {
@@ -162,8 +161,12 @@ export default function VideoEditorIaScreen() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: "videos",
+        mediaTypes: ["videos"],
         quality: 1,
+        allowsEditing: false,
+        allowsMultipleSelection: false,
+        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
       });
       if (result.canceled) return;
       if (!result.assets?.[0]) {
@@ -184,13 +187,6 @@ export default function VideoEditorIaScreen() {
   };
 
   const pickVideoSmart = async () => {
-    if (Platform.OS === "ios") {
-      const fallbackOk = await pickVideoWithDocumentPicker();
-      if (!fallbackOk) {
-        await pickVideoFromLibrary();
-      }
-      return;
-    }
     await pickVideoFromLibrary();
   };
 
@@ -312,12 +308,6 @@ export default function VideoEditorIaScreen() {
             <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting}>
               <Ionicons name="play-circle" size={23} color="#0c2106" />
               <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : "Enviar video"}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()}>
-              <Text style={styles.fallback}>Escolher arquivo (fallback)</Text>
-            </TouchableOpacity>
-            <TouchableOpacity activeOpacity={0.9} onPress={() => void pickVideoFromLibrary()}>
-              <Text style={styles.fallback}>Tentar galeria direta</Text>
             </TouchableOpacity>
             {picked ? (
               <Text style={styles.meta}>Arquivo: {picked.name} · {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(1)}s` : "duracao nao detectada"}</Text>
