@@ -164,6 +164,30 @@ export async function submitVideoEditJob(params: {
   return { video: legacyCreated, compatibilityMode: true };
 }
 
+export async function submitManualSourceJob(params: {
+  baseUrl: string;
+  file: { uri: string; name: string; type: string };
+  language?: string;
+}): Promise<VideoItem> {
+  const safeBase = cleanBaseUrl(params.baseUrl);
+  const body = new FormData();
+  body.append(
+    "video",
+    {
+      uri: params.file.uri,
+      name: params.file.name,
+      type: params.file.type,
+    } as unknown as Blob,
+  );
+  body.append("language", params.language?.trim() || "pt-BR");
+
+  const response = await fetch(`${safeBase}/v1/videos/manual-source`, {
+    method: "POST",
+    body,
+  });
+  return parseResponse<VideoItem>(response);
+}
+
 export async function fetchVideo(baseUrl: string, videoId: string): Promise<VideoItem> {
   const safeBase = cleanBaseUrl(baseUrl);
   const response = await fetch(`${safeBase}/v1/videos/${videoId}`);

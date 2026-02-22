@@ -696,6 +696,42 @@ def process_video_pipeline(video_id: str, trace_id: str, include_subtitles: bool
         log_error(trace_id, "pipeline", "video_pipeline_failed", error, video_id=video_id)
 
 
+def process_manual_source_pipeline(video_id: str, trace_id: str):
+    started = time.time()
+    timings: dict[str, int] = {}
+    row = get_video_row(video_id)
+    input_path = Path(row["input_path"])
+    final_out = OUTPUT_DIR / f"final_{video_id}.mp4"
+
+    try:
+        upsert_video_status(video_id, "PROCESSING", 0.2)
+        t0 = time.time()
+        deliver_social(input_path, final_out, trace_id=trace_id, video_id=video_id)
+        timings["manualPrepareDeliverMs"] = int((time.time() - t0) * 1000)
+        timings["totalMs"] = int((time.time() - started) * 1000)
+        upsert_video_status(
+            video_id,
+            "COMPLETE",
+            1.0,
+            completed=True,
+            output_path=final_out,
+            pipeline_timings=timings,
+        )
+        log_event(
+            "info",
+            trace_id,
+            "manual_prepare",
+            "manual_source_ready",
+            video_id=video_id,
+            output_path=final_out.as_posix(),
+            output_hash=short_hash(final_out),
+            duration_ms=timings["totalMs"],
+        )
+    except Exception as error:
+        upsert_video_status(video_id, "FAILED", 1.0, error_code="manual_source_failed", error_message=str(error), completed=True)
+        log_error(trace_id, "manual_prepare", "manual_source_failed", error, video_id=video_id)
+
+
 class JobAutoEditInput(BaseModel):
     input_path: str
     max_duration_seconds: Optional[float] = 15
@@ -927,6 +963,47 @@ async def create_video_caption_compat(
 
     def run_pipeline():
         process_video_pipeline(video_id, trace_id=trace_id, include_subtitles=True)
+
+    background_tasks.add_task(run_pipeline)
+    row = get_video_row(video_id)
+    return video_row_to_item(row)
+
+
+@app.post("/v1/videos/manual-source")
+async def create_video_manual_source(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    language: str = Form("pt-BR"),
+):
+    trace_id = request.state.trace_id
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", video.filename or "upload.mp4")
+    input_path = INPUT_DIR / f"manual_src_{uuid.uuid4().hex[:10]}_{safe_name}"
+    payload = await video.read()
+    input_path.write_bytes(payload)
+
+    log_event(
+        "info",
+        trace_id,
+        "upload",
+        "manual_source_received",
+        file_name=safe_name,
+        bytes=len(payload),
+        input_path=input_path.as_posix(),
+        file_hash=short_hash(input_path),
+        language=language,
+    )
+
+    video_id = create_video_record(
+        input_path=input_path,
+        mode="manual_source",
+        language=language,
+        style_prompt="",
+        caption_template_id=None,
+    )
+
+    def run_pipeline():
+        process_manual_source_pipeline(video_id, trace_id=trace_id)
 
     background_tasks.add_task(run_pipeline)
     row = get_video_row(video_id)

@@ -30,18 +30,10 @@ const serviceCards: Array<{
   },
   {
     id: "video_editor",
-    title: "Editar com IA\nem um clique",
-    hint: "Enviar video + corte + legenda",
+    title: "Editor de vídeo\nem um lugar",
+    hint: "IA automática ou edição manual",
     route: "/create/video-editor",
     image: require("../../assets/services/video-camera.png"),
-  },
-  {
-    id: "video_editor_manual",
-    title: "Editor manual\nseparado",
-    hint: "Ajustar corte final em outra tela",
-    route: "/create/video-editor-manual-hub",
-    image: require("../../assets/services/video-camera.png"),
-    ctaRight: true,
   },
 ];
 
