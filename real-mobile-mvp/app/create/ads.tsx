@@ -2,7 +2,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState, useRef } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
-import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator, TextInput, type LayoutChangeEvent } from "react-native";
+import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
@@ -519,75 +519,66 @@ function WelcomeStep({
   onSubmitIntro: () => void;
   loading: boolean;
 }) {
-  const [stageWidth, setStageWidth] = useState(0);
-  const [composerReady, setComposerReady] = useState(false);
-  const composerWidth = useRef(new Animated.Value(176)).current;
-  const composerX = useRef(new Animated.Value(0)).current;
-  const composerY = useRef(new Animated.Value(0)).current;
-  const composerBorder = useRef(new Animated.Value(999)).current;
+  const [showComposer, setShowComposer] = useState(false);
+  const bubbleX = useRef(new Animated.Value(0)).current;
+  const bubbleY = useRef(new Animated.Value(0)).current;
+  const bubbleScale = useRef(new Animated.Value(1)).current;
+  const bubbleOpacity = useRef(new Animated.Value(1)).current;
+  const composerOpacity = useRef(new Animated.Value(0)).current;
+  const composerLift = useRef(new Animated.Value(10)).current;
 
   useEffect(() => {
     if (!introComposerOpen) {
-      setComposerReady(false);
-      composerWidth.setValue(176);
-      composerX.setValue(0);
-      composerY.setValue(0);
-      composerBorder.setValue(999);
+      setShowComposer(false);
+      bubbleX.setValue(0);
+      bubbleY.setValue(0);
+      bubbleScale.setValue(1);
+      bubbleOpacity.setValue(1);
+      composerOpacity.setValue(0);
+      composerLift.setValue(10);
       return;
     }
 
-    const finalWidth = Math.max(220, stageWidth - SPACING.md * 1.4);
-    setComposerReady(false);
+    setShowComposer(false);
     Animated.sequence([
       Animated.parallel([
-        Animated.timing(composerWidth, {
-          toValue: 54,
-          duration: 220,
-          useNativeDriver: false,
-        }),
-        Animated.timing(composerBorder, {
-          toValue: 999,
-          duration: 220,
-          useNativeDriver: false,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(composerX, {
-          toValue: 118,
-          duration: 320,
-          useNativeDriver: true,
-        }),
-        Animated.timing(composerY, {
-          toValue: 156,
-          duration: 320,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(composerX, {
-          toValue: 0,
+        Animated.timing(bubbleX, {
+          toValue: 106,
           duration: 300,
           useNativeDriver: true,
         }),
-        Animated.timing(composerWidth, {
-          toValue: finalWidth,
+        Animated.timing(bubbleY, {
+          toValue: 140,
           duration: 300,
-          useNativeDriver: false,
+          useNativeDriver: true,
         }),
-        Animated.timing(composerBorder, {
-          toValue: 22,
+        Animated.timing(bubbleScale, {
+          toValue: 0.86,
           duration: 300,
-          useNativeDriver: false,
+          useNativeDriver: true,
         }),
       ]),
+      Animated.timing(bubbleOpacity, {
+        toValue: 0,
+        duration: 120,
+        useNativeDriver: true,
+      }),
     ]).start(() => {
-      setComposerReady(true);
+      setShowComposer(true);
+      Animated.parallel([
+        Animated.timing(composerOpacity, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+        Animated.timing(composerLift, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+      ]).start();
     });
-  }, [composerBorder, composerWidth, composerX, composerY, introComposerOpen, stageWidth]);
-
-  const onLayoutStage = (event: LayoutChangeEvent) => {
-    setStageWidth(event.nativeEvent.layout.width);
-  };
+  }, [bubbleOpacity, bubbleScale, bubbleX, bubbleY, composerLift, composerOpacity, introComposerOpen]);
 
   return (
     <View style={styles.welcomeContainer}>
@@ -598,43 +589,51 @@ function WelcomeStep({
       <Body style={styles.welcomeText}>
         Em poucos passos, você define o objetivo e a Real cuida de toda a execução, desde a estratégia até a otimização.
       </Body>
-      <View style={styles.intakeStage} onLayout={onLayoutStage}>
+      <View style={styles.intakeStage}>
         {!introComposerOpen ? (
           <Button label="Começar" onPress={onStartIntro} size="large" />
         ) : (
           <>
             <Title style={styles.intakeQuestion}>Me conte mais sobre o seu negócio.</Title>
             <Body style={styles.intakeQuestionHint}>Com isso eu já adianto e pré-preencho sua campanha.</Body>
-            <Animated.View
-              style={[
-                styles.intakeComposer,
-                {
-                  width: composerWidth,
-                  borderRadius: composerBorder,
-                  transform: [{ translateX: composerX }, { translateY: composerY }],
-                },
-              ]}
-            >
-              {composerReady ? (
-                <>
-                  <TextInput
-                    style={styles.intakeInput}
-                    placeholder="Ex.: Clínica estética, foco em harmonização, zona sul de SP..."
-                    placeholderTextColor="rgba(166,173,185,0.78)"
-                    value={introBrief}
-                    onChangeText={onChangeIntroBrief}
-                    editable={!loading}
-                    multiline
-                    maxLength={700}
-                  />
-                  <Pressable style={[styles.intakeSend, loading && styles.intakeSendDisabled]} onPress={onSubmitIntro} disabled={loading || !introBrief.trim()}>
-                    <Body style={styles.intakeSendText}>{loading ? "..." : "↑"}</Body>
-                  </Pressable>
-                </>
-              ) : (
-                <Body style={styles.intakeTravelArrow}>↑</Body>
-              )}
-            </Animated.View>
+            {!showComposer ? (
+              <Animated.View
+                style={[
+                  styles.intakeBubbleTravel,
+                  {
+                    opacity: bubbleOpacity,
+                    transform: [{ translateX: bubbleX }, { translateY: bubbleY }, { scale: bubbleScale }],
+                  },
+                ]}
+              >
+                <Body style={styles.intakeBubbleText}>↑</Body>
+              </Animated.View>
+            ) : null}
+            {showComposer ? (
+              <Animated.View
+                style={[
+                  styles.intakeComposer,
+                  {
+                    opacity: composerOpacity,
+                    transform: [{ translateY: composerLift }],
+                  },
+                ]}
+              >
+                <TextInput
+                  style={styles.intakeInput}
+                  placeholder="Ex.: Clínica estética, foco em harmonização, zona sul de SP..."
+                  placeholderTextColor="rgba(166,173,185,0.78)"
+                  value={introBrief}
+                  onChangeText={onChangeIntroBrief}
+                  editable={!loading}
+                  multiline
+                  maxLength={700}
+                />
+                <Pressable style={[styles.intakeSend, loading && styles.intakeSendDisabled]} onPress={onSubmitIntro} disabled={loading || !introBrief.trim()}>
+                  <Body style={styles.intakeSendText}>{loading ? "..." : "↑"}</Body>
+                </Pressable>
+              </Animated.View>
+            ) : null}
           </>
         )}
       </View>
@@ -1039,8 +1038,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.sm,
   },
   intakeComposer: {
-    position: "absolute",
+    width: "100%",
     minHeight: 56,
+    marginTop: SPACING.lg,
     paddingHorizontal: SPACING.sm,
     paddingVertical: SPACING.sm,
     backgroundColor: "rgba(10, 14, 18, 0.96)",
@@ -1055,12 +1055,26 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 9,
   },
-  intakeTravelArrow: {
-    color: realTheme.colors.text,
-    fontSize: 20,
-    width: "100%",
-    textAlign: "center",
-    paddingVertical: 8,
+  intakeBubbleTravel: {
+    position: "absolute",
+    top: SPACING.lg,
+    left: 0,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: realTheme.colors.green,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: realTheme.colors.green,
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  intakeBubbleText: {
+    color: "#061101",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 18,
   },
   intakeInput: {
     flex: 1,
