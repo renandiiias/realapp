@@ -6,7 +6,7 @@ import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { createManualEditorSession, fetchVideo, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
-import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
+import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
@@ -219,7 +219,13 @@ export default function VideoEditorManualHubScreen() {
 
   const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
   const stage = stageFromVideo(video);
-  const statusLabel = video ? mapVideoStatusToClientLabel(video.status, progress) : picked ? "Video carregado. Toque em preparar." : "Aguardando envio do video.";
+  const statusLabel = (() => {
+    if (!video) return picked ? "Video carregado. O portal manual esta pronto." : "Aguardando seu video para abrir o portal manual.";
+    if (video.status === "QUEUED") return "Recebido. Preparando o arquivo para o editor visual.";
+    if (video.status === "PROCESSING") return "Refinando o video para abrir sem travas no editor.";
+    if (video.status === "COMPLETE") return "Portal pronto. Agora voce pode abrir e editar.";
+    return "Falha na preparacao. Tente novamente.";
+  })();
 
   return (
     <Screen plain style={styles.screen}>
@@ -246,13 +252,13 @@ export default function VideoEditorManualHubScreen() {
           </View>
 
           <View style={styles.block}>
-            <Text style={styles.blockTitle}>Status da edicao</Text>
+            <Text style={styles.blockTitle}>Ritual da edicao</Text>
             <Text style={styles.status}>{statusLabel}</Text>
             {video?.status === "PROCESSING" ? <Text style={styles.meta}>{Math.max(1, Math.round(progress * 100))}% concluido</Text> : null}
             <View style={styles.timelineRow}>
-              <Text style={[styles.timelineText, stage === "prepare" ? styles.timelineActive : null]}>Preparar</Text>
-              <Text style={[styles.timelineText, stage === "process" ? styles.timelineActive : null]}>Processar</Text>
-              <Text style={[styles.timelineText, stage === "done" ? styles.timelineActive : null]}>Pronto</Text>
+              <Text style={[styles.timelineText, stage === "prepare" ? styles.timelineActive : null]}>Invocar</Text>
+              <Text style={[styles.timelineText, stage === "process" ? styles.timelineActive : null]}>Lapidar</Text>
+              <Text style={[styles.timelineText, stage === "done" ? styles.timelineActive : null]}>Manifestar</Text>
               <Text style={[styles.timelineText, stage === "failed" ? styles.timelineFailed : null]}>Falha</Text>
             </View>
             <TouchableOpacity

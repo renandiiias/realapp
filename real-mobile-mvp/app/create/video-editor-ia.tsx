@@ -16,7 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
+import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
@@ -285,7 +285,20 @@ export default function VideoEditorIaScreen() {
 
   const stage = stageFromVideo(video);
   const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
-  const statusLabel = video ? mapVideoStatusToClientLabel(video.status, progress) : picked ? "Video carregado. Toque em iniciar edicao." : "Aguardando envio do video.";
+  const statusLabel = (() => {
+    if (!video) {
+      return picked ? "Video carregado. O ritual esta pronto para comecar." : "Aguardando seu video para acender o ritual.";
+    }
+    if (video.status === "QUEUED") return "Seu video entrou no portal. Preparando os feiticos da IA.";
+    if (video.status === "PROCESSING") {
+      if (progress < 0.35) return "Invocando cortes inteligentes e lendo o ritmo da cena.";
+      if (progress < 0.75) return "Lapidando os trechos para deixar o video mais dinamico.";
+      if (progress < 0.95) return "Encantando com legenda e acabamento final.";
+      return "Quase pronto. Manifestando a versao final.";
+    }
+    if (video.status === "COMPLETE") return "Magia concluida. Seu video esta pronto para brilhar.";
+    return "A magia falhou desta vez. Ajuste e tente novamente.";
+  })();
 
   const stageColor = (key: string) => {
     if (stage === "failed") return key === "failed" ? "#ff6f6f" : "#7f8695";
@@ -331,13 +344,18 @@ export default function VideoEditorIaScreen() {
           </View>
 
           <View style={styles.block}>
-            <Text style={styles.blockTitle}>Status da edicao</Text>
+            <Text style={styles.blockTitle}>Ritual da edicao</Text>
             <Text style={styles.statusText}>{statusLabel}</Text>
+            {video?.status === "PROCESSING" ? (
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${Math.max(2, Math.round(progress * 100))}%` }]} />
+              </View>
+            ) : null}
             <View style={styles.timeline}>
-              <Text style={[styles.timelineText, { color: stageColor("prepare") }]}>Preparar</Text>
-              <Text style={[styles.timelineText, { color: stageColor("edit") }]}>Editando</Text>
-              <Text style={[styles.timelineText, { color: stageColor("deliver") }]}>Entregar</Text>
-              <Text style={[styles.timelineText, { color: stageColor("done") }]}>Pronto</Text>
+              <Text style={[styles.timelineText, { color: stageColor("prepare") }]}>Invocar</Text>
+              <Text style={[styles.timelineText, { color: stageColor("edit") }]}>Lapidar</Text>
+              <Text style={[styles.timelineText, { color: stageColor("deliver") }]}>Encantar</Text>
+              <Text style={[styles.timelineText, { color: stageColor("done") }]}>Manifestar</Text>
             </View>
             {video?.status === "PROCESSING" ? <Text style={styles.meta}>{Math.max(1, Math.round(progress * 100))}% concluido</Text> : null}
           </View>
@@ -484,9 +502,23 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   statusText: {
-    color: "#cdd5e1",
+    color: "#dce4f0",
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
+  },
+  progressTrack: {
+    marginTop: 4,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(31,38,53,0.95)",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.13)",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#57ef2f",
   },
   timeline: {
     flexDirection: "row",
