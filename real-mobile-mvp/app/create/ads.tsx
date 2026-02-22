@@ -2,7 +2,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState, useRef } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
-import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator } from "react-native";
+import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator, TextInput, type LayoutChangeEvent } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
@@ -12,6 +12,8 @@ import { Field } from "../../src/ui/components/Field";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body, Title } from "../../src/ui/components/Typography";
 import { SPACING, ANIMATION_DURATION } from "../../src/utils/constants";
+import { analyzeAdsBusinessBrief } from "../../src/ai/adsIntakeAssistant";
+import { buildErrorFingerprint, makeAdsTraceId, sendAdsClientLog } from "../../src/services/adsWizardDebugLog";
 
 type Step =
   | { id: "welcome"; type: "message" }
@@ -151,8 +153,13 @@ export default function AdsWizard() {
     style: "",
   });
   const [inputValue, setInputValue] = useState("");
+  const [introBrief, setIntroBrief] = useState("");
+  const [introComposerOpen, setIntroComposerOpen] = useState(false);
+  const [intakeLoading, setIntakeLoading] = useState(false);
   const [media, setMedia] = useState<LocalMedia | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const traceIdRef = useRef(makeAdsTraceId());
+  const queueApiBaseUrl = process.env.EXPO_PUBLIC_QUEUE_API_BASE_URL?.trim() || "";
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
@@ -160,11 +167,30 @@ export default function AdsWizard() {
 
   const currentStep = CONVERSATION_STEPS[currentStepIndex];
 
+  const logClientEvent = (stage: string, event: string, meta?: Record<string, unknown>, level: "info" | "warn" | "error" = "info") => {
+    void sendAdsClientLog({
+      baseUrl: queueApiBaseUrl,
+      traceId: traceIdRef.current,
+      stage,
+      event,
+      level,
+      meta,
+    });
+  };
+
   useEffect(() => {
     if (prompt) {
       setCurrentStepIndex(1);
     }
   }, [prompt]);
+
+  useEffect(() => {
+    logClientEvent("ads_wizard", "screen_opened", {
+      hasOrderId: Boolean(orderId),
+      hasPrompt: Boolean(prompt),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     fadeAnim.setValue(0);
@@ -193,8 +219,17 @@ export default function AdsWizard() {
     if (currentStep.type === "input" && currentStep.key) {
       setData((prev) => ({ ...prev, [currentStep.key]: value || inputValue }));
       setInputValue("");
+      logClientEvent("ads_wizard", "input_step_completed", {
+        stepId: currentStep.id,
+        key: currentStep.key,
+      });
     } else if (currentStep.type === "choice" && currentStep.key && value) {
       setData((prev) => ({ ...prev, [currentStep.key]: value }));
+      logClientEvent("ads_wizard", "choice_step_completed", {
+        stepId: currentStep.id,
+        key: currentStep.key,
+        value,
+      });
     }
 
     if (currentStepIndex < CONVERSATION_STEPS.length - 1) {
@@ -222,6 +257,10 @@ export default function AdsWizard() {
     }
 
     setSubmitting(true);
+    logClientEvent("ads_wizard", "submit_started", {
+      hasMedia: Boolean(media),
+      mediaKind: media?.kind ?? null,
+    });
     const title = data.offer ? `Tráfego: ${data.offer.slice(0, 36)}` : "Tráfego (Meta)";
     const summary = `${data.objective} • ${data.budget} • ${data.region}`;
     const customerName = String(auth.companyProfile?.companyName || "").trim();
@@ -234,7 +273,7 @@ export default function AdsWizard() {
       destinationWhatsApp,
       style: data.style,
       preferredCreative: data.style,
-      customerName: customerName || undefined,
+      ...(customerName ? { customerName } : {}),
       mediaAssetIds: [] as string[],
     };
 
@@ -272,12 +311,96 @@ export default function AdsWizard() {
       }
 
       await queue.submitOrder(id);
+      logClientEvent("ads_wizard", "submit_succeeded", { orderId: id });
       router.navigate("/orders");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha ao enviar pedido.";
+      logClientEvent(
+        "ads_wizard",
+        "submit_failed",
+        {
+          orderId: id ?? null,
+          fingerprint: buildErrorFingerprint(error, "ads_submit"),
+          message,
+        },
+        "error",
+      );
       Alert.alert("Erro", message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const resolveNextStepAfterPrefill = (snapshot: ConversationData): number => {
+    const mediaIndex = CONVERSATION_STEPS.findIndex((item) => item.id === "media");
+    const firstMissing = CONVERSATION_STEPS.findIndex((item, index) => {
+      if (index === 0) return false;
+      if (item.type !== "input" && item.type !== "choice") return false;
+      const value = snapshot[item.key];
+      return !String(value || "").trim();
+    });
+    if (firstMissing >= 0) return firstMissing;
+    return mediaIndex >= 0 ? mediaIndex : 1;
+  };
+
+  const handleIntroSubmit = async () => {
+    if (!introBrief.trim() || intakeLoading) return;
+    setIntakeLoading(true);
+    logClientEvent("ads_wizard", "intro_brief_submitted", {
+      chars: introBrief.trim().length,
+    });
+
+    try {
+      const aiPrefill = await analyzeAdsBusinessBrief({
+        brief: introBrief.trim(),
+        currentData: data,
+        companyContext: {
+          companyName: auth.companyProfile?.companyName ?? "",
+          offerSummary: auth.companyProfile?.offerSummary ?? "",
+          mainDifferential: auth.companyProfile?.mainDifferential ?? "",
+          primarySalesChannel: auth.companyProfile?.primarySalesChannel ?? "",
+          marketSegment: auth.rayX?.marketSegment ?? "",
+        },
+      });
+
+      const mergedDataSnapshot: ConversationData = {
+        ...data,
+        objective: aiPrefill.objective || data.objective,
+        offer: aiPrefill.offer || data.offer,
+        budget: aiPrefill.budget || data.budget,
+        audience: aiPrefill.audience || data.audience,
+        region: aiPrefill.region || data.region,
+        destinationWhatsApp: aiPrefill.destinationWhatsApp || data.destinationWhatsApp,
+        style: aiPrefill.style || data.style,
+      };
+      setData(mergedDataSnapshot);
+
+      logClientEvent("ads_wizard", "intro_prefill_applied", {
+        hasObjective: Boolean(aiPrefill.objective),
+        hasOffer: Boolean(aiPrefill.offer),
+        hasBudget: Boolean(aiPrefill.budget),
+        hasAudience: Boolean(aiPrefill.audience),
+        hasRegion: Boolean(aiPrefill.region),
+        hasDestinationWhatsApp: Boolean(aiPrefill.destinationWhatsApp),
+        hasStyle: Boolean(aiPrefill.style),
+      });
+
+      setIntroComposerOpen(false);
+      setCurrentStepIndex(resolveNextStepAfterPrefill(mergedDataSnapshot));
+      setIntroBrief("");
+    } catch (error) {
+      logClientEvent(
+        "ads_wizard",
+        "intro_prefill_failed",
+        {
+          fingerprint: buildErrorFingerprint(error, "ads_intro_prefill"),
+          fallbackToManual: true,
+        },
+        "warn",
+      );
+      setCurrentStepIndex(1);
+    } finally {
+      setIntakeLoading(false);
     }
   };
 
@@ -320,7 +443,19 @@ export default function AdsWizard() {
             },
           ]}
         >
-          {currentStep?.type === "message" && <WelcomeStep onNext={() => handleNext()} />}
+          {currentStep?.type === "message" && (
+            <WelcomeStep
+              introComposerOpen={introComposerOpen}
+              onStartIntro={() => {
+                setIntroComposerOpen(true);
+                logClientEvent("ads_wizard", "intro_animation_started");
+              }}
+              introBrief={introBrief}
+              onChangeIntroBrief={setIntroBrief}
+              onSubmitIntro={() => void handleIntroSubmit()}
+              loading={intakeLoading}
+            />
+          )}
 
           {currentStep?.type === "input" && (
             <InputStep
@@ -355,7 +490,91 @@ export default function AdsWizard() {
   );
 }
 
-function WelcomeStep({ onNext }: { onNext: () => void }) {
+function WelcomeStep({
+  introComposerOpen,
+  onStartIntro,
+  introBrief,
+  onChangeIntroBrief,
+  onSubmitIntro,
+  loading,
+}: {
+  introComposerOpen: boolean;
+  onStartIntro: () => void;
+  introBrief: string;
+  onChangeIntroBrief: (value: string) => void;
+  onSubmitIntro: () => void;
+  loading: boolean;
+}) {
+  const [stageWidth, setStageWidth] = useState(0);
+  const [composerReady, setComposerReady] = useState(false);
+  const composerWidth = useRef(new Animated.Value(176)).current;
+  const composerX = useRef(new Animated.Value(0)).current;
+  const composerY = useRef(new Animated.Value(0)).current;
+  const composerBorder = useRef(new Animated.Value(999)).current;
+
+  useEffect(() => {
+    if (!introComposerOpen) {
+      setComposerReady(false);
+      composerWidth.setValue(176);
+      composerX.setValue(0);
+      composerY.setValue(0);
+      composerBorder.setValue(999);
+      return;
+    }
+
+    const finalWidth = Math.max(220, stageWidth - SPACING.md * 1.4);
+    setComposerReady(false);
+    Animated.sequence([
+      Animated.parallel([
+        Animated.timing(composerWidth, {
+          toValue: 54,
+          duration: 220,
+          useNativeDriver: false,
+        }),
+        Animated.timing(composerBorder, {
+          toValue: 999,
+          duration: 220,
+          useNativeDriver: false,
+        }),
+      ]),
+      Animated.parallel([
+        Animated.timing(composerX, {
+          toValue: 118,
+          duration: 320,
+          useNativeDriver: true,
+        }),
+        Animated.timing(composerY, {
+          toValue: 156,
+          duration: 320,
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.parallel([
+        Animated.timing(composerX, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.timing(composerWidth, {
+          toValue: finalWidth,
+          duration: 300,
+          useNativeDriver: false,
+        }),
+        Animated.timing(composerBorder, {
+          toValue: 22,
+          duration: 300,
+          useNativeDriver: false,
+        }),
+      ]),
+    ]).start(() => {
+      setComposerReady(true);
+    });
+  }, [composerBorder, composerWidth, composerX, composerY, introComposerOpen, stageWidth]);
+
+  const onLayoutStage = (event: LayoutChangeEvent) => {
+    setStageWidth(event.nativeEvent.layout.width);
+  };
+
   return (
     <View style={styles.welcomeContainer}>
       <View style={styles.iconContainer}>
@@ -365,7 +584,46 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
       <Body style={styles.welcomeText}>
         Em poucos passos, você define o objetivo e a Real cuida de toda a execução, desde a estratégia até a otimização.
       </Body>
-      <Button label="Começar" onPress={onNext} size="large" />
+      <View style={styles.intakeStage} onLayout={onLayoutStage}>
+        {!introComposerOpen ? (
+          <Button label="Começar" onPress={onStartIntro} size="large" />
+        ) : (
+          <>
+            <Title style={styles.intakeQuestion}>Me conte mais sobre o seu negócio.</Title>
+            <Body style={styles.intakeQuestionHint}>Com isso eu já adianto e pré-preencho sua campanha.</Body>
+            <Animated.View
+              style={[
+                styles.intakeComposer,
+                {
+                  width: composerWidth,
+                  borderRadius: composerBorder,
+                  transform: [{ translateX: composerX }, { translateY: composerY }],
+                },
+              ]}
+            >
+              {composerReady ? (
+                <>
+                  <TextInput
+                    style={styles.intakeInput}
+                    placeholder="Ex.: Clínica estética, foco em harmonização, zona sul de SP..."
+                    placeholderTextColor="rgba(166,173,185,0.78)"
+                    value={introBrief}
+                    onChangeText={onChangeIntroBrief}
+                    editable={!loading}
+                    multiline
+                    maxLength={700}
+                  />
+                  <Pressable style={[styles.intakeSend, loading && styles.intakeSendDisabled]} onPress={onSubmitIntro} disabled={loading || !introBrief.trim()}>
+                    <Body style={styles.intakeSendText}>{loading ? "..." : "↑"}</Body>
+                  </Pressable>
+                </>
+              ) : (
+                <Body style={styles.intakeTravelArrow}>↑</Body>
+              )}
+            </Animated.View>
+          </>
+        )}
+      </View>
     </View>
   );
 }
@@ -575,6 +833,73 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: SPACING.lg,
     paddingVertical: SPACING.xl,
+  },
+  intakeStage: {
+    width: "100%",
+    minHeight: 260,
+    alignItems: "center",
+  },
+  intakeQuestion: {
+    textAlign: "center",
+    fontSize: 21,
+    marginTop: SPACING.md,
+  },
+  intakeQuestionHint: {
+    textAlign: "center",
+    color: realTheme.colors.muted,
+    marginTop: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
+  },
+  intakeComposer: {
+    position: "absolute",
+    minHeight: 56,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    backgroundColor: "rgba(10, 14, 18, 0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(53, 226, 20, 0.35)",
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: SPACING.sm,
+    shadowColor: realTheme.colors.green,
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 9,
+  },
+  intakeTravelArrow: {
+    color: realTheme.colors.text,
+    fontSize: 20,
+    width: "100%",
+    textAlign: "center",
+    paddingVertical: 8,
+  },
+  intakeInput: {
+    flex: 1,
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    minHeight: 40,
+    maxHeight: 104,
+    paddingVertical: 4,
+    textAlignVertical: "top",
+  },
+  intakeSend: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: realTheme.colors.green,
+  },
+  intakeSendDisabled: {
+    opacity: 0.4,
+  },
+  intakeSendText: {
+    color: "#061101",
+    fontFamily: realTheme.fonts.bodyBold,
+    fontSize: 16,
   },
   iconContainer: {
     width: 80,
