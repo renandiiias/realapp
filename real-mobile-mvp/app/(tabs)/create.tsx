@@ -8,7 +8,7 @@ import { Body } from "../../src/ui/components/Typography";
 const serviceCards: Array<{
   id: string;
   title: string;
-  hint: string;
+  hint?: string;
   route: string;
   image: ImageSourcePropType;
   ctaRight?: boolean;
@@ -23,8 +23,7 @@ const serviceCards: Array<{
   },
   {
     id: "site",
-    title: "Sua página\npronta para vender",
-    hint: "Com botão direto pro WhatsApp",
+    title: "Seu site\npronto para vender",
     route: "/create/site",
     image: require("../../assets/services/ads-whatsapp.png"),
   },
@@ -54,7 +53,7 @@ export default function Create() {
                   <View style={styles.cardContent}>
                     <View style={styles.textWrap}>
                       <Text style={styles.cardTitle}>{item.title}</Text>
-                      <Body style={styles.cardHint}>{item.hint}</Body>
+                      {item.hint ? <Body style={styles.cardHint}>{item.hint}</Body> : null}
                     </View>
 
                     <View style={[styles.ctaButton, item.ctaRight ? styles.ctaRight : null]}>
