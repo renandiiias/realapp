@@ -7,6 +7,7 @@ import {
   humanizeVideoError,
   mapVideoStatusToClientLabel,
 } from "../src/services/videoEditorPresenter";
+import { __resetPickerRecoveryMutexForTests, pickVideoWithRecoveryCore, type PickerRecoveryDeps } from "../src/services/videoPickerRecoveryCore";
 
 function testUpsertAndStatusTransition() {
   const state1 = ordersReducer(initialOrdersState, {
@@ -204,7 +205,167 @@ function testVideoDeliverableSummary() {
   assert.equal(summary.includes("Estilo solicitado considerado na edicao."), true);
 }
 
-function main() {
+function createPickerDeps(overrides?: Partial<PickerRecoveryDeps>): PickerRecoveryDeps {
+  const stagedSizes = new Map<string, number>();
+  return {
+    platform: "ios",
+    launchImageLibraryAsync: async () => ({ canceled: true, assets: [] }),
+    getDocumentAsync: async () => ({ canceled: true, assets: [] }),
+    copyAsync: async ({ to }) => {
+      stagedSizes.set(to, 1024);
+    },
+    getInfoAsync: async (uri: string) => ({ exists: stagedSizes.has(uri), size: stagedSizes.get(uri) ?? 0 }),
+    cacheDirectory: "file:///tmp/",
+    documentDirectory: "file:///docs/",
+    sleepMs: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    nowMs: () => Date.now(),
+    random: () => Math.random(),
+    ...overrides,
+  };
+}
+
+async function testPickerRecoverySuccessFirstAttempt() {
+  __resetPickerRecoveryMutexForTests();
+  const events: string[] = [];
+  let galleryCalls = 0;
+  let documentCalls = 0;
+  const deps = createPickerDeps({
+    launchImageLibraryAsync: async () => {
+      galleryCalls += 1;
+      return {
+        canceled: false,
+        assets: [{ uri: "file:///video-a.mp4", fileName: "video-a.mp4", mimeType: "video/mp4", duration: 5000, fileSize: 2048 }],
+      };
+    },
+    getDocumentAsync: async () => {
+      documentCalls += 1;
+      return { canceled: true, assets: [] };
+    },
+  });
+
+  const recovered = await pickVideoWithRecoveryCore({
+    traceId: "trace_picker_a",
+    galleryAttempts: [{ id: "gallery_preserve", options: {} }],
+    documentPickerOptions: {},
+    deps,
+    log: ({ event }) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(recovered?.source, "gallery_preserve");
+  assert.equal(galleryCalls, 1);
+  assert.equal(documentCalls, 0);
+  assert.equal(events.includes("picker_stage_copy_ok"), true);
+}
+
+async function testPickerRecoverySecondAttemptAfterFirstFailure() {
+  __resetPickerRecoveryMutexForTests();
+  const events: string[] = [];
+  let galleryCalls = 0;
+  const deps = createPickerDeps({
+    launchImageLibraryAsync: async () => {
+      galleryCalls += 1;
+      if (galleryCalls === 1) {
+        throw new Error("PHPhotosErrorDomain error 3164");
+      }
+      return {
+        canceled: false,
+        assets: [{ uri: "file:///video-b.mp4", fileName: "video-b.mp4", mimeType: "video/mp4", duration: 12, fileSize: 4096 }],
+      };
+    },
+  });
+
+  const recovered = await pickVideoWithRecoveryCore({
+    traceId: "trace_picker_b",
+    galleryAttempts: [
+      { id: "gallery_preserve", options: {} },
+      { id: "gallery_compat", options: {} },
+    ],
+    documentPickerOptions: {},
+    deps,
+    log: ({ event }) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(galleryCalls, 2);
+  assert.equal(recovered?.source, "gallery_compat");
+  assert.equal(events.includes("picker_attempt_recovered"), true);
+}
+
+async function testPickerRecoveryFallsBackToDocuments() {
+  __resetPickerRecoveryMutexForTests();
+  const events: string[] = [];
+  let documentCalls = 0;
+  const deps = createPickerDeps({
+    launchImageLibraryAsync: async () => {
+      throw new Error("picker_failed");
+    },
+    getDocumentAsync: async () => {
+      documentCalls += 1;
+      return {
+        canceled: false,
+        assets: [{ uri: "file:///video-c.mp4", fileName: "video-c.mp4", mimeType: "video/mp4", duration: 5, fileSize: 1500 }],
+      };
+    },
+  });
+
+  const recovered = await pickVideoWithRecoveryCore({
+    traceId: "trace_picker_c",
+    galleryAttempts: [
+      { id: "gallery_preserve", options: {} },
+      { id: "gallery_compat", options: {} },
+    ],
+    documentPickerOptions: {},
+    deps,
+    log: ({ event }) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(documentCalls, 1);
+  assert.equal(recovered?.source, "document_auto");
+  assert.equal(events.includes("picker_auto_document_start"), true);
+  assert.equal(events.includes("picker_auto_document_ok"), true);
+}
+
+async function testPickerRecoveryMutexBlocksConcurrentPickers() {
+  __resetPickerRecoveryMutexForTests();
+  let running = 0;
+  let maxRunning = 0;
+  let call = 0;
+  const deps = createPickerDeps({
+    launchImageLibraryAsync: async () => {
+      call += 1;
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      const current = call;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      running -= 1;
+      return {
+        canceled: false,
+        assets: [{ uri: `file:///video-${current}.mp4`, fileName: `video-${current}.mp4`, mimeType: "video/mp4", duration: 7, fileSize: 2000 }],
+      };
+    },
+  });
+
+  const params = {
+    galleryAttempts: [{ id: "gallery_preserve" as const, options: {} }],
+    documentPickerOptions: {},
+    deps,
+  };
+  const [first, second] = await Promise.all([
+    pickVideoWithRecoveryCore({ traceId: "trace_mutex_1", ...params }),
+    pickVideoWithRecoveryCore({ traceId: "trace_mutex_2", ...params }),
+  ]);
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(maxRunning, 1);
+}
+
+async function main() {
   testUpsertAndStatusTransition();
   testApprovalUpdatesDeliverableAndOrder();
   testProfileReadinessMinimumComplete();
@@ -213,14 +374,16 @@ function main() {
   testVideoStatusPresenter();
   testVideoErrorHumanization();
   testVideoDeliverableSummary();
+  await testPickerRecoverySuccessFirstAttempt();
+  await testPickerRecoverySecondAttemptAfterFirstFailure();
+  await testPickerRecoveryFallsBackToDocuments();
+  await testPickerRecoveryMutexBlocksConcurrentPickers();
   // Keep output short (CI-friendly).
   console.log("unit_tests: ok");
 }
 
-try {
-  main();
-} catch (err) {
+main().catch((err) => {
   console.error("unit_tests: failed");
   console.error(err);
   process.exit(1);
-}
+});

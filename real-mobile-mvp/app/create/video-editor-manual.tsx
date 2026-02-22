@@ -1,6 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { ResizeMode, Video } from "expo-av";
-import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
@@ -8,6 +7,7 @@ import { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { createManualEditorSession, fetchVideo, getDownloadUrl, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
+import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
@@ -105,22 +105,6 @@ function splitSegments(cutStart: number, cutEnd: number, splitPoints: number[], 
     enabled: oldMap.get(`${cursor.toFixed(3)}-${cutEnd.toFixed(3)}`) ?? true,
   });
   return result.filter((s) => s.end - s.start > 0.04);
-}
-
-async function launchLibraryWithTimeout(timeoutMs = 12000): Promise<any> {
-  return Promise.race([
-    ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["videos"],
-      quality: 1,
-      allowsEditing: false,
-      allowsMultipleSelection: false,
-      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-      videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-    }),
-    new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs),
-    ),
-  ]);
 }
 
 export default function VideoEditorManualScreen() {
@@ -285,91 +269,6 @@ export default function VideoEditorManualScreen() {
     }
   };
 
-  const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
-    try {
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "picker",
-        event: "document_picker_start",
-      });
-      const result = await DocumentPicker.getDocumentAsync({
-        type: "video/*",
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled || !result.assets?.[0]) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: flowTraceId,
-          stage: "picker",
-          event: "document_picker_canceled_or_empty",
-        });
-        return false;
-      }
-      const normalized = applyPicked(
-        {
-          uri: result.assets[0].uri,
-          fileName: result.assets[0].name,
-          mimeType: result.assets[0].mimeType,
-          fileSize: result.assets[0].size,
-        },
-        flowTraceId,
-      );
-      if (!normalized) return false;
-      setPicked(normalized);
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "picker",
-        event: "document_picker_asset_ok",
-        meta: { uri: sanitizeUri(normalized.uri), file_name: normalized.name, mime: normalized.mimeType, duration_seconds: normalized.durationSeconds },
-      });
-      await prepareManualEditor(normalized);
-      return true;
-    } catch (pickError) {
-      const raw = pickError instanceof Error ? pickError.message : String(pickError ?? "");
-      if (/Different document picking in progress/i.test(raw)) {
-        await new Promise((r) => setTimeout(r, 700));
-        try {
-          const retry = await DocumentPicker.getDocumentAsync({
-            type: "video/*",
-            multiple: false,
-            copyToCacheDirectory: true,
-          });
-          if (!retry.canceled && retry.assets?.[0]) {
-            const normalizedRetry = applyPicked(
-              {
-                uri: retry.assets[0].uri,
-                fileName: retry.assets[0].name,
-                mimeType: retry.assets[0].mimeType,
-                fileSize: retry.assets[0].size,
-              },
-              flowTraceId,
-            );
-            if (normalizedRetry) {
-              setPicked(normalizedRetry);
-              await prepareManualEditor(normalizedRetry);
-              return true;
-            }
-          }
-        } catch {
-          // noop
-        }
-      }
-      setError(pickerErrorMessage(pickError));
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "picker",
-        event: "document_picker_failed",
-        level: "error",
-        meta: { raw_error: raw },
-      });
-      return false;
-    }
-  };
-
   const pickVideoSmart = async () => {
     if (pickingVideo || loadingSource) return;
     setPickingVideo(true);
@@ -403,18 +302,32 @@ export default function VideoEditorManualScreen() {
         stage: "picker",
         event: "image_library_open_start",
       });
-      const result = await launchLibraryWithTimeout();
-      if (result.canceled || !result.assets?.[0]) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: nextTraceId,
-          stage: "picker",
-          event: result.canceled ? "image_library_canceled" : "image_library_empty_assets",
-        });
+      const recovered = await pickVideoWithRecovery({
+        traceId: nextTraceId,
+        log: ({ event, level, meta }) =>
+          sendVideoClientLog({
+            baseUrl: videoApiBase,
+            traceId: nextTraceId,
+            stage: "picker",
+            event,
+            level,
+            meta: meta ?? {},
+          }),
+      });
+      if (!recovered) {
         return;
       }
 
-      const normalized = applyPicked(result.assets[0], nextTraceId);
+      const normalized = applyPicked(
+        {
+          uri: recovered.uri,
+          fileName: recovered.fileName,
+          mimeType: recovered.mimeType,
+          duration: recovered.duration,
+          fileSize: recovered.fileSize,
+        },
+        nextTraceId,
+      );
       if (!normalized) return;
       setPicked(normalized);
       void sendVideoClientLog({
@@ -430,14 +343,12 @@ export default function VideoEditorManualScreen() {
         baseUrl: videoApiBase,
         traceId: nextTraceId,
         stage: "picker",
-        event: "image_library_failed_fallback_document_picker",
+        event: "image_library_failed_after_recovery",
         level: "warn",
         meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
       });
-      setStatus("Galeria instavel no iPhone. Abrindo fallback de arquivos...");
-      await new Promise((r) => setTimeout(r, 700));
-      const fallbackOk = await pickVideoWithDocumentPicker();
-      if (!fallbackOk) setError(pickerErrorMessage(pickError));
+      setStatus("Nao foi possivel recuperar o video automaticamente.");
+      setError(pickerErrorMessage(pickError));
     } finally {
       setPickingVideo(false);
     }
@@ -735,9 +646,6 @@ export default function VideoEditorManualScreen() {
               <TouchableOpacity style={styles.greenButton} activeOpacity={0.92} onPress={() => void pickVideoSmart()} disabled={loadingSource}>
                 {loadingSource || pickingVideo ? <ActivityIndicator color="#102808" /> : <Ionicons name="play-circle" size={24} color="#102808" />}
                 <Text style={styles.greenButtonText}>{loadingSource ? "Preparando..." : pickingVideo ? "Abrindo galeria..." : "Enviar da galeria"}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryButton} activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()} disabled={loadingSource}>
-                <Text style={styles.secondaryButtonText}>Escolher arquivo (fallback)</Text>
               </TouchableOpacity>
               {picked ? <Text style={styles.meta}>Arquivo: {picked.name}</Text> : null}
               <Text style={styles.statusText}>{status}</Text>

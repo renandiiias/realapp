@@ -5,6 +5,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
+import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -77,6 +78,8 @@ type LocalMedia = {
   kind: "image" | "video";
 };
 
+type VideoPickerEventLogger = (event: string, level: DebugLevel, meta?: Record<string, unknown>) => void;
+
 type DebugLevel = "info" | "warn" | "error";
 
 type AdsBusinessBriefPrefill = Partial<ConversationData>;
@@ -118,15 +121,45 @@ function guessMime(kind: "image" | "video", uri: string): string {
   return "video/mp4";
 }
 
-async function pickMedia(kind: "image" | "video"): Promise<LocalMedia | null> {
+async function pickMedia(
+  kind: "image" | "video",
+  options?: { traceId?: string; onVideoPickerEvent?: VideoPickerEventLogger },
+): Promise<LocalMedia | null> {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) {
     Alert.alert("Permissão", "Permita acesso à galeria para enviar criativo.");
     return null;
   }
 
+  if (kind === "video") {
+    try {
+      const recovered = await pickVideoWithRecovery({
+        traceId: options?.traceId || makeAdsTraceId("ads_picker"),
+        maxSizeBytes: 30 * 1024 * 1024,
+        log: ({ event, level, meta }) => options?.onVideoPickerEvent?.(event, level ?? "info", meta ?? {}),
+      });
+      if (!recovered) return null;
+      return {
+        uri: recovered.uri,
+        fileName: recovered.fileName,
+        mimeType: recovered.mimeType || guessMime("video", recovered.uri),
+        sizeBytes: recovered.fileSize,
+        kind: "video",
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      options?.onVideoPickerEvent?.("picker_attempt_failed", "warn", { reason: message });
+      if (/oversize/i.test(message)) {
+        Alert.alert("Arquivo inválido", "Use arquivo de até 30MB.");
+        return null;
+      }
+      Alert.alert("Falha ao abrir vídeo", "Não foi possível recuperar o vídeo automaticamente.");
+      return null;
+    }
+  }
+
   const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: kind === "image" ? "images" : "videos",
+    mediaTypes: "images",
     quality: 1,
   });
 
@@ -489,7 +522,14 @@ export default function AdsWizard() {
             <MediaStep
               media={media}
               onPickImage={() => void pickMedia("image").then((item) => item && setMedia(item))}
-              onPickVideo={() => void pickMedia("video").then((item) => item && setMedia(item))}
+              onPickVideo={() =>
+                void pickMedia("video", {
+                  traceId: traceIdRef.current,
+                  onVideoPickerEvent: (event, level, meta) => {
+                    logClientEvent("picker", event, meta, level);
+                  },
+                }).then((item) => item && setMedia(item))
+              }
               onNext={() => handleNext()}
             />
           )}

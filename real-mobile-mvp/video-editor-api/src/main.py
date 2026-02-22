@@ -14,7 +14,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,14 +29,20 @@ INPUT_DIR = STORAGE_ROOT / "input"
 WORK_DIR = STORAGE_ROOT / "work"
 OUTPUT_DIR = STORAGE_ROOT / "output"
 LOGS_DIR = STORAGE_ROOT / "logs"
+INCIDENTS_DIR = LOGS_DIR / "incidents"
 DB_PATH = Path(os.getenv("VIDEO_DB_PATH", STORAGE_ROOT / "video_editor.db")).resolve()
 EDITOR_DIR = Path(os.getenv("VIDEO_EDITOR_WEB_DIR", BASE_DIR / "editor")).resolve()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8081").rstrip("/")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 MAX_WORKERS = int(os.getenv("VIDEO_MAX_WORKERS", "2"))
 VIDEO_EDITOR_MANUAL_ENABLED = os.getenv("VIDEO_EDITOR_MANUAL_ENABLED", "true").lower() == "true"
+INCIDENT_WINDOW_MIN = int(os.getenv("INCIDENT_WINDOW_MIN", "15"))
+INCIDENT_RESET_MIN = int(os.getenv("INCIDENT_RESET_MIN", "30"))
+INCIDENT_L1 = int(os.getenv("INCIDENT_L1", "3"))
+INCIDENT_L2 = int(os.getenv("INCIDENT_L2", "5"))
+INCIDENT_L3 = int(os.getenv("INCIDENT_L3", "8"))
 
-for d in [INPUT_DIR, WORK_DIR, OUTPUT_DIR, LOGS_DIR, EDITOR_DIR]:
+for d in [INPUT_DIR, WORK_DIR, OUTPUT_DIR, LOGS_DIR, INCIDENTS_DIR, EDITOR_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title=APP_NAME, version="1.0.0")
@@ -118,6 +124,46 @@ class Db:
                 )
                 """
             )
+            c.execute(
+                """
+                create table if not exists incident_events (
+                  id integer primary key autoincrement,
+                  fingerprint text not null,
+                  level integer not null default 0,
+                  count_15m integer not null default 0,
+                  error_type text not null,
+                  message text not null,
+                  stack text,
+                  context_json text,
+                  stage text,
+                  event text,
+                  trace_id text,
+                  request_id text,
+                  run_id text,
+                  event_ts text not null,
+                  report_path text
+                )
+                """
+            )
+            c.execute("create index if not exists idx_incident_events_fp_ts on incident_events (fingerprint, event_ts)")
+            c.execute(
+                """
+                create table if not exists incident_states (
+                  fingerprint text primary key,
+                  level integer not null default 0,
+                  count_15m integer not null default 0,
+                  first_seen_at text not null,
+                  last_seen_at text not null,
+                  reset_applied integer not null default 0,
+                  last_event_json text,
+                  last_trace_id text,
+                  last_request_id text,
+                  last_run_id text,
+                  report_path text,
+                  updated_at text not null
+                )
+                """
+            )
             self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()):
@@ -143,8 +189,453 @@ class Db:
 db = Db(DB_PATH)
 
 
+SENSITIVE_KEY_RE = re.compile(r"(token|password|passwd|pwd|cookie|authorization|secret|api[_-]?key)", re.IGNORECASE)
+SENSITIVE_VALUE_PATTERNS = [
+    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+    re.compile(r"\bsk-[A-Za-z0-9]{8,}\b"),
+    re.compile(r"\b(xox[pbars]-[A-Za-z0-9-]{8,})\b", re.IGNORECASE),
+]
+
+
 def now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def now_dt_utc() -> dt.datetime:
+    return dt.datetime.utcnow().replace(microsecond=0)
+
+
+def iso_from_dt(value: dt.datetime) -> str:
+    if value.tzinfo is not None:
+        value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return value.replace(microsecond=0).isoformat() + "Z"
+
+
+def parse_iso_utc(raw: str) -> dt.datetime:
+    value = (raw or "").strip()
+    if not value:
+        return dt.datetime.utcfromtimestamp(0)
+    with contextlib.suppress(Exception):
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        parsed = dt.datetime.fromisoformat(value)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return parsed.replace(microsecond=0)
+    with contextlib.suppress(Exception):
+        return dt.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.utcfromtimestamp(0)
+
+
+def clip_text(value: Any, limit: int) -> str:
+    text = str(value if value is not None else "")
+    return text[:limit]
+
+
+def redact_string(raw: str) -> str:
+    out = raw
+    for pattern in SENSITIVE_VALUE_PATTERNS:
+        out = pattern.sub("***", out)
+    return out
+
+
+def redact_data(value: Any, key_hint: str = "", depth: int = 0) -> Any:
+    if depth > 8:
+        return "***depth_limit***"
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if SENSITIVE_KEY_RE.search(key_hint):
+            return "***"
+        return redact_string(value)[:16000]
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [redact_data(item, key_hint, depth + 1) for item in value[:200]]
+    if isinstance(value, tuple):
+        return [redact_data(item, key_hint, depth + 1) for item in list(value)[:200]]
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in list(value.items())[:300]:
+            redacted[str(key)] = redact_data(item, str(key), depth + 1)
+        return redacted
+    return redact_string(str(value))[:16000]
+
+
+def infer_error_type(message: str) -> str:
+    text = (message or "").strip()
+    if not text:
+        return "UnknownError"
+    for pattern in [r"\b([A-Za-z]+(?:Error|Exception|Domain))\b", r"^([A-Za-z][A-Za-z0-9_.-]{2,40})"]:
+        matched = re.search(pattern, text)
+        if matched:
+            return matched.group(1)[:80]
+    return "ClientEventError"
+
+
+def meta_lookup(meta: dict[str, Any], keys: list[str]) -> Optional[str]:
+    for key in keys:
+        value = meta.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text[:160]
+    return None
+
+
+class IncidentManager:
+    def __init__(
+        self,
+        db_ref: Db,
+        incidents_dir: Path,
+        *,
+        window_minutes: int = 15,
+        reset_minutes: int = 30,
+        level_l1: int = 3,
+        level_l2: int = 5,
+        level_l3: int = 8,
+        now_provider: Optional[Callable[[], dt.datetime]] = None,
+    ):
+        self.db = db_ref
+        self.incidents_dir = incidents_dir
+        self.window_minutes = max(1, int(window_minutes))
+        self.reset_minutes = max(self.window_minutes, int(reset_minutes))
+        self.level_l1 = max(1, int(level_l1))
+        self.level_l2 = max(self.level_l1, int(level_l2))
+        self.level_l3 = max(self.level_l2, int(level_l3))
+        self.now_provider = now_provider
+        self.incidents_dir.mkdir(parents=True, exist_ok=True)
+
+    def _now_dt(self) -> dt.datetime:
+        if self.now_provider is None:
+            return now_dt_utc()
+        value = self.now_provider()
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return value.replace(microsecond=0)
+
+    def _now_iso(self) -> str:
+        return iso_from_dt(self._now_dt())
+
+    def level_from_count(self, count_15m: int) -> int:
+        if count_15m >= self.level_l3:
+            return 3
+        if count_15m >= self.level_l2:
+            return 2
+        if count_15m >= self.level_l1:
+            return 1
+        return 0
+
+    def _primary_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        keys = [
+            "stage",
+            "event",
+            "path",
+            "route",
+            "platform",
+            "source",
+            "reason",
+            "code",
+            "error_code",
+            "request_id",
+            "run_id",
+            "job_id",
+            "video_id",
+        ]
+        out: dict[str, Any] = {}
+        for key in keys:
+            value = context.get(key)
+            if value in (None, "", [], {}):
+                continue
+            out[key] = value
+        if out:
+            return out
+        for key in sorted(context.keys())[:8]:
+            value = context.get(key)
+            if value in (None, "", [], {}):
+                continue
+            out[key] = value
+        return out
+
+    def fingerprint(self, error_type: str, message: str, stack: str, context: dict[str, Any]) -> str:
+        safe_type = clip_text(error_type, 120)
+        safe_message = clip_text(message, 1600)
+        safe_stack = clip_text(stack, 6000)
+        primary = self._primary_context(context)
+        raw = f"{safe_type}|{safe_message}|{safe_stack}|{json.dumps(primary, sort_keys=True, ensure_ascii=True)}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _impact_for_level(self, level: int) -> str:
+        if level >= 3:
+            return "Critico: erro recorrente com alta probabilidade de impactar operacao e upload."
+        if level >= 2:
+            return "Alto: erro recorrente confirmado com impacto direto na experiencia do usuario."
+        if level >= 1:
+            return "Moderado: repeticao detectada dentro da janela de observacao."
+        return "Baixo: evento isolado dentro da janela."
+
+    def _attempts_text(self, context: dict[str, Any]) -> str:
+        failures = context.get("failures")
+        if isinstance(failures, list) and failures:
+            joined = ", ".join([clip_text(item, 120) for item in failures[:8]])
+            return joined[:1200]
+        reason = context.get("reason") or context.get("message")
+        if reason:
+            return clip_text(reason, 800)
+        return "Sem detalhes adicionais de tentativas."
+
+    def _write_report(
+        self,
+        *,
+        fingerprint: str,
+        level: int,
+        count_15m: int,
+        error_type: str,
+        message: str,
+        stack: str,
+        context: dict[str, Any],
+        trace_id: str,
+        request_id: Optional[str],
+        run_id: Optional[str],
+    ) -> str:
+        now = self._now_dt()
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        path = self.incidents_dir / f"incident-{fingerprint}-{stamp}.md"
+        status = "critical_open" if level >= 3 else "investigating"
+        hypothesis = "Falha intermitente na captura de asset do iOS ou incompatibilidade de representacao do arquivo."
+        if error_type:
+            hypothesis = f"{hypothesis} Tipo observado: {error_type}."
+        lines = [
+            "# Relatorio de Incidente",
+            "",
+            f"- horario: {iso_from_dt(now)}",
+            f"- fingerprint: {fingerprint}",
+            f"- frequencia: {count_15m} ocorrencias nos ultimos {self.window_minutes} minutos",
+            f"- impacto: {self._impact_for_level(level)}",
+            f"- hipotese: {clip_text(hypothesis, 1500)}",
+            f"- tentativas feitas: {self._attempts_text(context)}",
+            "- proximos passos: validar reproducoes no iOS real, revisar fallback de picker e acompanhar incidente por 24h.",
+            f"- status: {status}",
+            "",
+            "## Ultimo Evento",
+            f"- trace_id: {clip_text(trace_id, 160)}",
+            f"- request_id: {clip_text(request_id or '-', 160)}",
+            f"- run_id: {clip_text(run_id or '-', 160)}",
+            f"- erro: {clip_text(message, 2400)}",
+        ]
+        if level >= 3:
+            lines.extend(
+                [
+                    "",
+                    "## Trace Completo",
+                    "```text",
+                    clip_text(stack, 30000),
+                    "```",
+                ]
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path.as_posix()
+
+    def register(
+        self,
+        *,
+        error_type: str,
+        message: str,
+        stack: str,
+        context: dict[str, Any],
+        stage: str,
+        event: str,
+        trace_id: str,
+        request_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now = self._now_dt()
+        now_str = iso_from_dt(now)
+        safe_context_raw = redact_data(context or {}, "context")
+        safe_context = safe_context_raw if isinstance(safe_context_raw, dict) else {"context": safe_context_raw}
+        safe_type = clip_text(redact_data(error_type, "error_type"), 120)
+        safe_message = clip_text(redact_data(message, "message"), 3000)
+        safe_stack = clip_text(redact_data(stack, "stack"), 60000)
+        safe_trace = clip_text(trace_id or "-", 160)
+        safe_request = clip_text(request_id or "", 160) or None
+        safe_run = clip_text(run_id or "", 160) or None
+        safe_stage = clip_text(stage, 120)
+        safe_event = clip_text(event, 160)
+        fingerprint = self.fingerprint(safe_type, safe_message, safe_stack, safe_context)
+
+        prev = self.db.fetchone("select * from incident_states where fingerprint = ?", (fingerprint,))
+        reset_applied = False
+        if prev:
+            last_seen = parse_iso_utc(prev["last_seen_at"])
+            if (now - last_seen) >= dt.timedelta(minutes=self.reset_minutes):
+                reset_applied = True
+
+        window_start = iso_from_dt(now - dt.timedelta(minutes=self.window_minutes))
+        count_row = self.db.fetchone(
+            "select count(1) as c from incident_events where fingerprint = ? and event_ts >= ?",
+            (fingerprint, window_start),
+        )
+        count_15m = int((count_row["c"] if count_row and count_row["c"] is not None else 0)) + 1
+        level = self.level_from_count(count_15m)
+        prev_level = int(prev["level"]) if prev else 0
+
+        report_path = prev["report_path"] if prev and prev["report_path"] else None
+        if level >= 2 and (prev_level < 2 or (prev_level < 3 and level >= 3) or not report_path):
+            report_path = self._write_report(
+                fingerprint=fingerprint,
+                level=level,
+                count_15m=count_15m,
+                error_type=safe_type,
+                message=safe_message,
+                stack=safe_stack,
+                context=safe_context,
+                trace_id=safe_trace,
+                request_id=safe_request,
+                run_id=safe_run,
+            )
+
+        self.db.execute(
+            """
+            insert into incident_events (
+              fingerprint, level, count_15m, error_type, message, stack, context_json,
+              stage, event, trace_id, request_id, run_id, event_ts, report_path
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fingerprint,
+                level,
+                count_15m,
+                safe_type,
+                safe_message,
+                safe_stack,
+                json.dumps(safe_context, ensure_ascii=True),
+                safe_stage,
+                safe_event,
+                safe_trace,
+                safe_request,
+                safe_run,
+                now_str,
+                report_path,
+            ),
+        )
+
+        first_seen = prev["first_seen_at"] if prev and prev["first_seen_at"] else now_str
+        last_event = {
+            "stage": safe_stage,
+            "event": safe_event,
+            "error_type": safe_type,
+            "message": safe_message[:1200],
+            "level": level,
+            "count_15m": count_15m,
+            "ts": now_str,
+        }
+        self.db.execute(
+            """
+            insert into incident_states (
+              fingerprint, level, count_15m, first_seen_at, last_seen_at, reset_applied,
+              last_event_json, last_trace_id, last_request_id, last_run_id, report_path, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(fingerprint) do update set
+              level = excluded.level,
+              count_15m = excluded.count_15m,
+              last_seen_at = excluded.last_seen_at,
+              reset_applied = excluded.reset_applied,
+              last_event_json = excluded.last_event_json,
+              last_trace_id = excluded.last_trace_id,
+              last_request_id = excluded.last_request_id,
+              last_run_id = excluded.last_run_id,
+              report_path = coalesce(excluded.report_path, incident_states.report_path),
+              updated_at = excluded.updated_at
+            """,
+            (
+                fingerprint,
+                level,
+                count_15m,
+                first_seen,
+                now_str,
+                1 if reset_applied else 0,
+                json.dumps(last_event, ensure_ascii=True),
+                safe_trace,
+                safe_request,
+                safe_run,
+                report_path,
+                now_str,
+            ),
+        )
+        return {
+            "incident_fingerprint": fingerprint,
+            "incident_level": level,
+            "incident_count_15m": count_15m,
+            "incident_reset_applied": reset_applied,
+            "report_path": report_path,
+            "last_seen_at": now_str,
+            "last_trace_id": safe_trace,
+        }
+
+    def _apply_stale_resets(self):
+        now = self._now_dt()
+        cutoff = iso_from_dt(now - dt.timedelta(minutes=self.reset_minutes))
+        now_str = iso_from_dt(now)
+        self.db.execute(
+            """
+            update incident_states
+            set level = 0,
+                count_15m = 0,
+                reset_applied = 1,
+                updated_at = ?
+            where level > 0 and last_seen_at < ?
+            """,
+            (now_str, cutoff),
+        )
+
+    def tail(self, *, limit: int, fingerprint: Optional[str] = None, min_level: int = 0) -> list[dict[str, Any]]:
+        self._apply_stale_resets()
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if fingerprint:
+            clauses.append("fingerprint = ?")
+            params.append(fingerprint)
+        if min_level > 0:
+            clauses.append("level >= ?")
+            params.append(int(min_level))
+        params.append(int(limit))
+        rows = self.db.fetchall(
+            f"select * from incident_states where {' and '.join(clauses)} order by last_seen_at desc limit ?",
+            tuple(params),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            last_event = {}
+            if row["last_event_json"]:
+                with contextlib.suppress(Exception):
+                    last_event = json.loads(row["last_event_json"])
+            out.append(
+                {
+                    "fingerprint": row["fingerprint"],
+                    "level": int(row["level"] or 0),
+                    "count_15m": int(row["count_15m"] or 0),
+                    "last_seen_at": row["last_seen_at"],
+                    "last_event": last_event,
+                    "last_trace_id": row["last_trace_id"],
+                    "last_request_id": row["last_request_id"],
+                    "last_run_id": row["last_run_id"],
+                    "report_path": row["report_path"],
+                    "incident_reset_applied": bool(row["reset_applied"]),
+                }
+            )
+        return out
+
+
+incident_manager = IncidentManager(
+    db,
+    INCIDENTS_DIR,
+    window_minutes=INCIDENT_WINDOW_MIN,
+    reset_minutes=INCIDENT_RESET_MIN,
+    level_l1=INCIDENT_L1,
+    level_l2=INCIDENT_L2,
+    level_l3=INCIDENT_L3,
+)
 
 
 def short_hash(path: Path) -> str:
@@ -164,7 +655,9 @@ def request_trace_id(request: Request) -> str:
 
 def write_log(entry: dict[str, Any]):
     ts = now_iso()
-    payload = {"ts": ts, "app": APP_NAME, **entry}
+    payload_raw: dict[str, Any] = {"ts": ts, "app": APP_NAME, **entry}
+    payload_safe = redact_data(payload_raw, "root")
+    payload = payload_safe if isinstance(payload_safe, dict) else payload_raw
     date = ts[:10]
     out = LOGS_DIR / f"video-editor-api-{date}.jsonl"
     with out.open("a", encoding="utf-8") as f:
@@ -185,13 +678,42 @@ def log_event(level: str, trace_id: str, stage: str, event: str, **meta):
 
 
 def log_error(trace_id: str, stage: str, event: str, error: Exception, **meta):
+    safe_meta_raw = redact_data(meta or {}, "meta")
+    safe_meta = safe_meta_raw if isinstance(safe_meta_raw, dict) else {"meta": safe_meta_raw}
+    stack = traceback.format_exc()
+    request_id = meta_lookup(safe_meta, ["request_id", "requestId", "http_request_id"])
+    run_id = meta_lookup(safe_meta, ["run_id", "runId", "job_id", "video_id"])
+    incident_meta = {
+        "incident_fingerprint": None,
+        "incident_level": 0,
+        "incident_count_15m": 0,
+        "incident_reset_applied": False,
+    }
+    with contextlib.suppress(Exception):
+        incident_meta = incident_manager.register(
+            error_type=error.__class__.__name__ or "RuntimeError",
+            message=str(error),
+            stack=stack,
+            context={**safe_meta, "stage": stage, "event": event},
+            stage=stage,
+            event=event,
+            trace_id=trace_id,
+            request_id=request_id,
+            run_id=run_id,
+        )
     write_log(
         {
             "level": "error",
             "trace_id": trace_id,
             "stage": stage,
             "event": event,
-            "meta": {**meta, "error": str(error), "stack": traceback.format_exc()},
+            "meta": {
+                **safe_meta,
+                "error": str(error),
+                "error_type": error.__class__.__name__ or "RuntimeError",
+                "stack": stack,
+                **incident_meta,
+            },
         }
     )
 
@@ -1655,6 +2177,30 @@ def jobs_get(job_id: str):
     return job_row_to_item(row)
 
 
+def should_track_client_incident(level: str, event_name: str) -> bool:
+    if level in {"warn", "error"}:
+        return True
+    lowered = (event_name or "").lower()
+    return "failed" in lowered or "error" in lowered
+
+
+def build_client_incident_context(stage: str, event_name: str, meta: dict[str, Any], request: Request) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "event": event_name,
+        "source": meta.get("source"),
+        "platform": meta.get("platform"),
+        "reason": meta.get("reason"),
+        "code": meta.get("code") or meta.get("error_code"),
+        "video_id": meta.get("video_id"),
+        "order_id": meta.get("order_id"),
+        "job_id": meta.get("job_id"),
+        "request_id": meta.get("request_id") or meta.get("requestId"),
+        "run_id": meta.get("run_id") or meta.get("runId"),
+        "path": request.url.path,
+    }
+
+
 @app.post("/v1/debug/client-events")
 def client_events(payload: ClientEventInput, request: Request):
     request_trace = request.state.trace_id
@@ -1662,13 +2208,44 @@ def client_events(payload: ClientEventInput, request: Request):
     safe_level = payload.level.lower().strip()
     if safe_level not in {"info", "warn", "error"}:
         safe_level = "info"
-    meta = payload.meta or {}
+    raw_meta = payload.meta or {}
+    safe_meta_raw = redact_data(raw_meta, "meta")
+    meta = safe_meta_raw if isinstance(safe_meta_raw, dict) else {"meta": safe_meta_raw}
+    stage = payload.stage.strip()[:80]
+    event_name = payload.event.strip()[:120]
+    incident_meta = {
+        "incident_fingerprint": None,
+        "incident_level": 0,
+        "incident_count_15m": 0,
+        "incident_reset_applied": False,
+    }
+
+    if should_track_client_incident(safe_level, event_name):
+        error_message = clip_text(meta.get("error") or meta.get("raw_error") or meta.get("reason") or event_name, 2500)
+        error_stack = clip_text(meta.get("stack") or meta.get("error_stack") or "", 20000)
+        error_type = clip_text(meta.get("error_type") or infer_error_type(error_message), 120)
+        request_id = meta_lookup(meta, ["request_id", "requestId"])
+        run_id = meta_lookup(meta, ["run_id", "runId", "job_id", "video_id"])
+        with contextlib.suppress(Exception):
+            incident_meta = incident_manager.register(
+                error_type=error_type,
+                message=error_message,
+                stack=error_stack,
+                context=build_client_incident_context(stage, event_name, meta, request),
+                stage=f"client_{stage}",
+                event=event_name,
+                trace_id=trace_id,
+                request_id=request_id,
+                run_id=run_id,
+            )
+
     log_event(
         safe_level,
         trace_id,
-        f"client_{payload.stage.strip()[:80]}",
-        payload.event.strip()[:120],
+        f"client_{stage}",
+        event_name,
         **meta,
+        **incident_meta,
         client_ip=request.client.host if request.client else None,
         user_agent=(request.headers.get("user-agent", "")[:240]),
     )
@@ -1710,6 +2287,32 @@ def logs_tail(
 
     log_event("info", trace_id, "logs", "tail_read", count=len(out), video_id=videoId, order_id=orderId, trace_id_filter=traceId, limit=limit)
     return {"count": len(out), "items": out}
+
+
+@app.get("/internal/incidents/tail")
+def incidents_tail(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+    fingerprint: Optional[str] = Query(default=None),
+    minLevel: int = Query(default=0, ge=0, le=3),
+    x_api_key: Optional[str] = Header(default=None),
+):
+    trace_id = request.state.trace_id
+    if INTERNAL_API_KEY and x_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    items = incident_manager.tail(limit=limit, fingerprint=fingerprint, min_level=minLevel)
+    log_event(
+        "info",
+        trace_id,
+        "incidents",
+        "tail_read",
+        count=len(items),
+        limit=limit,
+        fingerprint=fingerprint,
+        min_level=minLevel,
+    )
+    return {"count": len(items), "items": items}
 
 
 @app.exception_handler(HTTPException)

@@ -1,6 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { ResizeMode, Video } from "expo-av";
-import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
@@ -9,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
+import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
@@ -63,11 +63,6 @@ function pickerErrorMessage(error: unknown): string {
   return "Falha ao abrir video da galeria.";
 }
 
-function isIosPhotos3164(error: unknown): boolean {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  return /PHPhotosErrorDomain/i.test(raw) && /3164/.test(raw);
-}
-
 function hasAcceptedExtension(name: string): boolean {
   const lowered = name.toLowerCase();
   return ACCEPTED_EXTENSIONS.some((ext) => lowered.endsWith(ext));
@@ -82,20 +77,6 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
   }
   if (video.status === "COMPLETE") return "done";
   return "failed";
-}
-
-async function launchLibraryWithTimeout(timeoutMs = 12000): Promise<any> {
-  return Promise.race([
-    ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["videos"],
-      quality: 1,
-      allowsEditing: false,
-      allowsMultipleSelection: false,
-      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-      videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-    }),
-    new Promise<any>((_, reject) => setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs)),
-  ]);
 }
 
 export default function VideoEditorIaScreen() {
@@ -198,54 +179,6 @@ export default function VideoEditorIaScreen() {
     setFunnelStep("mode");
   };
 
-  const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
-    try {
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "picker",
-        event: "document_picker_start",
-      });
-      const result = await DocumentPicker.getDocumentAsync({
-        type: "video/*",
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled || !result.assets?.[0]) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: flowTraceId,
-          stage: "picker",
-          event: "document_picker_canceled_or_empty",
-        });
-        return false;
-      }
-      const file = result.assets[0];
-      applyPicked(
-        {
-          uri: file.uri,
-          fileName: file.name,
-          mimeType: file.mimeType,
-          fileSize: file.size,
-        },
-        flowTraceId,
-      );
-      return true;
-    } catch (pickError) {
-      const raw = pickError instanceof Error ? pickError.message : String(pickError ?? "");
-      setError(pickerErrorMessage(pickError));
-      void sendVideoClientLog({
-        baseUrl: videoApiBase,
-        traceId: flowTraceId,
-        stage: "picker",
-        event: "document_picker_failed",
-        level: "error",
-        meta: { raw_error: raw },
-      });
-      return false;
-    }
-  };
-
   const pickVideoFromLibrary = async () => {
     if (pickingVideo || submitting) return;
     setPickingVideo(true);
@@ -269,32 +202,40 @@ export default function VideoEditorIaScreen() {
       }
 
       void sendVideoClientLog({ baseUrl: videoApiBase, traceId: nextTraceId, stage: "picker", event: "image_library_open_start" });
-      const result = await launchLibraryWithTimeout();
-      if (result.canceled) return;
-
-      if (!result.assets?.[0]) {
-        const fallbackOk = await pickVideoWithDocumentPicker();
-        if (!fallbackOk) setError("Nao foi possivel carregar da galeria. Tente novamente pelo fallback.");
+      const recovered = await pickVideoWithRecovery({
+        traceId: nextTraceId,
+        log: ({ event, level, meta }) =>
+          sendVideoClientLog({
+            baseUrl: videoApiBase,
+            traceId: nextTraceId,
+            stage: "picker",
+            event,
+            level,
+            meta: meta ?? {},
+          }),
+      });
+      if (!recovered) {
         return;
       }
-
-      applyPicked(result.assets[0], nextTraceId);
+      applyPicked(
+        {
+          uri: recovered.uri,
+          fileName: recovered.fileName,
+          mimeType: recovered.mimeType,
+          duration: recovered.duration,
+          fileSize: recovered.fileSize,
+        },
+        nextTraceId,
+      );
     } catch (pickError) {
       void sendVideoClientLog({
         baseUrl: videoApiBase,
         traceId: nextTraceId,
         stage: "picker",
-        event: "image_library_failed_fallback_document_picker",
+        event: "image_library_failed_after_recovery",
         level: "warn",
         meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
       });
-      await new Promise((r) => setTimeout(r, 700));
-      const fallbackOk = await pickVideoWithDocumentPicker();
-      if (fallbackOk) return;
-      if (isIosPhotos3164(pickError)) {
-        setError("Nao consegui abrir esse video da galeria. Use o fallback para arquivos do iCloud.");
-        return;
-      }
       setError(pickerErrorMessage(pickError));
     } finally {
       setPickingVideo(false);
