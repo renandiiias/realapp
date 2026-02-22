@@ -5,7 +5,7 @@ import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { createManualEditorSession, fetchVideo, getDownloadUrl, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
@@ -35,7 +35,7 @@ type ManualCaption = {
 };
 
 type CaptionMode = "auto" | "manual" | "none";
-type ToolTab = "cut" | "split" | "text";
+type ToolTab = "cut" | "split" | "text" | "audio" | "effects" | "adjust";
 
 const MAX_VIDEO_SECONDS = 300;
 const ACCEPTED_EXTENSIONS = [".mp4", ".mov", ".m4v"];
@@ -139,6 +139,9 @@ export default function VideoEditorManualScreen() {
 
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [positionSeconds, setPositionSeconds] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [timelineWidth, setTimelineWidth] = useState(0);
 
   const [tab, setTab] = useState<ToolTab>("cut");
   const [captionMode, setCaptionMode] = useState<CaptionMode>("auto");
@@ -151,6 +154,8 @@ export default function VideoEditorManualScreen() {
   const [captionEnd, setCaptionEnd] = useState("1.50");
   const [captionDraft, setCaptionDraft] = useState("");
   const [manualCaptions, setManualCaptions] = useState<ManualCaption[]>([]);
+  const [brightness, setBrightness] = useState(0);
+  const [contrast, setContrast] = useState(1);
 
   const videoApiBase = useMemo(() => {
     const raw = process.env.EXPO_PUBLIC_VIDEO_EDITOR_API_BASE_URL?.trim() ?? "";
@@ -453,6 +458,24 @@ export default function VideoEditorManualScreen() {
     setSegments((prev) => splitSegments(nextCutStart, nextCutEnd, nextSplits, prev));
   };
 
+  const logEditorEvent = (stage: string, event: string, meta?: Record<string, unknown>) => {
+    void sendVideoClientLog({
+      baseUrl: videoApiBase,
+      traceId: flowTraceId,
+      stage,
+      event,
+      meta,
+    });
+  };
+
+  const setActiveToolTab = (nextTab: ToolTab) => {
+    setTab(nextTab);
+    if (nextTab === "audio") {
+      setStatus("Audio e trilhas entram na proxima iteracao do editor.");
+    }
+    logEditorEvent("manual_editor_ui", "tool_tab_selected", { tab: nextTab });
+  };
+
   const toggleSegment = (id: string) => {
     setSegments((current) => current.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)));
   };
@@ -468,12 +491,14 @@ export default function VideoEditorManualScreen() {
     setSplitPoints(next);
     syncSegments(cutStart, cutEnd, next);
     setStatus(`Divisao adicionada em ${formatTime(positionSeconds)}.`);
+    logEditorEvent("manual_editor_timeline", "split_added", { at_seconds: Number(positionSeconds.toFixed(3)), split_count: next.length });
   };
 
   const clearSplits = () => {
     setSplitPoints([]);
     syncSegments(cutStart, cutEnd, []);
     setStatus("Divisoes limpas.");
+    logEditorEvent("manual_editor_timeline", "splits_cleared");
   };
 
   const markCutStart = () => {
@@ -482,6 +507,7 @@ export default function VideoEditorManualScreen() {
     const filtered = splitPoints.filter((p) => p > next && p < cutEnd);
     setSplitPoints(filtered);
     syncSegments(next, cutEnd, filtered);
+    logEditorEvent("manual_editor_cut", "cut_start_marked", { cut_start_seconds: Number(next.toFixed(3)), cut_end_seconds: Number(cutEnd.toFixed(3)) });
   };
 
   const markCutEnd = () => {
@@ -491,6 +517,7 @@ export default function VideoEditorManualScreen() {
     const filtered = splitPoints.filter((p) => p > cutStart && p < bounded);
     setSplitPoints(filtered);
     syncSegments(cutStart, bounded, filtered);
+    logEditorEvent("manual_editor_cut", "cut_end_marked", { cut_start_seconds: Number(cutStart.toFixed(3)), cut_end_seconds: Number(bounded.toFixed(3)) });
   };
 
   const resetCut = () => {
@@ -499,6 +526,7 @@ export default function VideoEditorManualScreen() {
     setCutEnd(end);
     setSplitPoints([]);
     syncSegments(0, end, []);
+    logEditorEvent("manual_editor_cut", "cut_reset", { cut_end_seconds: Number(end.toFixed(3)) });
   };
 
   const useCurrentTimeForCaption = () => {
@@ -506,6 +534,7 @@ export default function VideoEditorManualScreen() {
     const end = Math.min(durationSeconds, start + 1.5);
     setCaptionStart(start.toFixed(2));
     setCaptionEnd(end.toFixed(2));
+    logEditorEvent("manual_editor_caption", "caption_marker_applied", { start_seconds: Number(start.toFixed(3)), end_seconds: Number(end.toFixed(3)) });
   };
 
   const addManualCaption = () => {
@@ -528,10 +557,50 @@ export default function VideoEditorManualScreen() {
     setManualCaptions((prev) => [...prev, cap]);
     setCaptionDraft("");
     setStatus("Legenda manual adicionada.");
+    logEditorEvent("manual_editor_caption", "manual_caption_added", { start_seconds: st, end_seconds: en, text_len: cap.text.length });
   };
 
   const deleteCaption = (id: string) => {
     setManualCaptions((prev) => prev.filter((c) => c.id !== id));
+    logEditorEvent("manual_editor_caption", "manual_caption_deleted", { caption_id: id });
+  };
+
+  const togglePlayPause = async () => {
+    if (!videoRef.current) return;
+    try {
+      if (isPlaying) {
+        await videoRef.current.pauseAsync();
+        logEditorEvent("manual_editor_transport", "paused", { at_seconds: Number(positionSeconds.toFixed(3)) });
+      } else {
+        await videoRef.current.playAsync();
+        logEditorEvent("manual_editor_transport", "played", { at_seconds: Number(positionSeconds.toFixed(3)) });
+      }
+    } catch {
+      // noop
+    }
+  };
+
+  const seekBySeconds = async (deltaSeconds: number) => {
+    if (!videoRef.current) return;
+    const next = Math.max(0, Math.min(durationSeconds || 0, positionSeconds + deltaSeconds));
+    try {
+      await videoRef.current.setPositionAsync(Math.floor(next * 1000));
+      logEditorEvent("manual_editor_transport", "seek_delta", { delta_seconds: deltaSeconds, to_seconds: Number(next.toFixed(3)) });
+    } catch {
+      // noop
+    }
+  };
+
+  const jumpToProgress = async (progress01: number) => {
+    if (!videoRef.current || !durationSeconds) return;
+    const bounded = Math.max(0, Math.min(1, progress01));
+    const next = durationSeconds * bounded;
+    try {
+      await videoRef.current.setPositionAsync(Math.floor(next * 1000));
+      logEditorEvent("manual_editor_timeline", "timeline_seek", { progress: Number(bounded.toFixed(4)), to_seconds: Number(next.toFixed(3)) });
+    } catch {
+      // noop
+    }
   };
 
   const previewSegmented = async () => {
@@ -653,274 +722,328 @@ export default function VideoEditorManualScreen() {
     <Screen plain style={styles.screen}>
       <LinearGradient colors={["#07090f", "#0a0d17", "#07090f"]} style={styles.bg}>
         <View style={styles.glowTop} />
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <View style={styles.topBar}>
-            <TouchableOpacity style={styles.backIcon} onPress={() => router.back()} activeOpacity={0.9}>
-              <Ionicons name="arrow-back" size={28} color="#eef2f8" />
-            </TouchableOpacity>
-            <Text style={styles.topTitle}>Editor Visual Pro</Text>
-            <TouchableOpacity
-              style={[styles.exportTopButton, !editorReady || exporting ? styles.exportTopDisabled : null]}
-              onPress={() => void exportManual()}
-              activeOpacity={0.9}
-              disabled={!editorReady || exporting}
-            >
-              {exporting ? <ActivityIndicator color="#0d2507" size="small" /> : <Text style={styles.exportTopText}>Exportar</Text>}
-            </TouchableOpacity>
-          </View>
-
-          {!editorReady ? (
+        {!editorReady ? (
+          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <View style={styles.topBar}>
+              <TouchableOpacity style={styles.backIcon} onPress={() => router.back()} activeOpacity={0.9}>
+                <Ionicons name="arrow-back" size={28} color="#eef2f8" />
+              </TouchableOpacity>
+            </View>
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Envie da galeria e abra o editor</Text>
               <Text style={styles.cardSubtitle}>Sem tela intermediaria. Um unico fluxo direto para editar manualmente.</Text>
-
               <TouchableOpacity style={styles.greenButton} activeOpacity={0.92} onPress={() => void pickVideoSmart()} disabled={loadingSource}>
                 {loadingSource || pickingVideo ? <ActivityIndicator color="#102808" /> : <Ionicons name="play-circle" size={24} color="#102808" />}
                 <Text style={styles.greenButtonText}>{loadingSource ? "Preparando..." : pickingVideo ? "Abrindo galeria..." : "Enviar da galeria"}</Text>
               </TouchableOpacity>
-
               <TouchableOpacity style={styles.secondaryButton} activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()} disabled={loadingSource}>
                 <Text style={styles.secondaryButtonText}>Escolher arquivo (fallback)</Text>
               </TouchableOpacity>
-
               {picked ? <Text style={styles.meta}>Arquivo: {picked.name}</Text> : null}
               <Text style={styles.statusText}>{status}</Text>
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
             </View>
-          ) : (
-            <>
-              <View style={styles.playerCard}>
-                {playbackUrl ? (
-                  <Video
-                    ref={videoRef}
-                    source={{ uri: playbackUrl }}
-                    style={styles.player}
-                    useNativeControls={false}
-                    resizeMode={ResizeMode.COVER}
-                    onLoad={(s: any) => {
-                      const dur = (s?.durationMillis || 0) / 1000;
-                      ensureEditorSetupFromLoadedVideo(dur);
-                      if (!cutEnd && dur > 0) setCutEnd(dur);
-                    }}
-                    onPlaybackStatusUpdate={(s: any) => {
-                      if (!s.isLoaded) return;
-                      setPositionSeconds((s.positionMillis || 0) / 1000);
-                      if (!durationSeconds && s.durationMillis) setDurationSeconds((s.durationMillis || 0) / 1000);
-                    }}
-                  />
-                ) : null}
-              </View>
+          </ScrollView>
+        ) : (
+          <View style={styles.editorShell}>
+            <View style={styles.topBarCompact}>
+              <TouchableOpacity style={styles.backIcon} onPress={() => router.back()} activeOpacity={0.9}>
+                <Ionicons name="arrow-back" size={28} color="#eef2f8" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.exportTopButton, exporting ? styles.exportTopDisabled : null]}
+                onPress={() => void exportManual()}
+                activeOpacity={0.9}
+                disabled={exporting}
+              >
+                {exporting ? <ActivityIndicator color="#0d2507" size="small" /> : <Text style={styles.exportTopText}>Exportar</Text>}
+              </TouchableOpacity>
+            </View>
 
-              <View style={styles.timerRow}>
-                <Text style={styles.timerActive}>{formatTime(positionSeconds)}</Text>
-                <View style={styles.timelineBarWrap}>
-                  <View style={styles.timelineBarBg}>
-                    <View style={[styles.timelineBarFill, { width: `${durationSeconds ? Math.max(2, Math.min(100, (positionSeconds / durationSeconds) * 100)) : 0}%` }]} />
-                  </View>
-                </View>
-                <Text style={styles.timerMuted}>{formatTime(durationSeconds)}</Text>
-              </View>
-
-              <View style={styles.transportRowMock}>
-                <TouchableOpacity style={styles.transportGhostBtn} onPress={resetCut} activeOpacity={0.9}>
-                  <Ionicons name="arrow-undo" size={24} color="#cdd6e5" />
+            <View style={styles.videoWrap}>
+              {playbackUrl ? (
+                <Video
+                  ref={videoRef}
+                  source={{ uri: playbackUrl }}
+                  style={styles.player}
+                  useNativeControls={false}
+                  resizeMode={ResizeMode.COVER}
+                  onLoad={(s: any) => {
+                    const dur = (s?.durationMillis || 0) / 1000;
+                    ensureEditorSetupFromLoadedVideo(dur);
+                    if (!cutEnd && dur > 0) setCutEnd(dur);
+                  }}
+                  onPlaybackStatusUpdate={(s: any) => {
+                    if (!s.isLoaded) return;
+                    setPositionSeconds((s.positionMillis || 0) / 1000);
+                    setIsPlaying(Boolean(s.isPlaying));
+                    if (!durationSeconds && s.durationMillis) setDurationSeconds((s.durationMillis || 0) / 1000);
+                  }}
+                />
+              ) : null}
+              <View style={styles.overlayControls}>
+                <TouchableOpacity style={styles.overlayBtn} onPress={() => void seekBySeconds(-5)}>
+                  <Ionicons name="play-back" size={18} color="#dce4f1" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.max(0, (positionSeconds - 1.5) * 1000))} activeOpacity={0.9}>
-                  <Ionicons name="play-skip-back" size={30} color="#d8deea" />
+                <TouchableOpacity style={styles.overlayPlayBtn} onPress={() => void togglePlayPause()}>
+                  <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#58ef31" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.transportPlayMock} onPress={() => void videoRef.current?.playAsync()} activeOpacity={0.9}>
-                  <Ionicons name="play" size={30} color="#57ef2f" />
+                <TouchableOpacity style={styles.overlayBtn} onPress={() => void seekBySeconds(5)}>
+                  <Ionicons name="play-forward" size={18} color="#dce4f1" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.min(durationSeconds, positionSeconds + 1.5) * 1000)} activeOpacity={0.9}>
-                  <Ionicons name="play-skip-forward" size={30} color="#d8deea" />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void previewSegmented()} activeOpacity={0.9}>
-                  <Ionicons name="scan-outline" size={24} color="#cdd6e5" />
+                <TouchableOpacity
+                  style={styles.overlayBtn}
+                  onPress={() => {
+                    setIsFullscreen(true);
+                    logEditorEvent("manual_editor_transport", "fullscreen_open");
+                  }}
+                >
+                  <Ionicons name="expand-outline" size={17} color="#dce4f1" />
                 </TouchableOpacity>
               </View>
+            </View>
 
-              <View style={styles.rulerRow}>
-                <Text style={styles.rulerTime}>00:00.00</Text>
-                <Text style={styles.rulerTime}>00:15.00</Text>
-                <Text style={styles.rulerTime}>00:30.00</Text>
-                <Text style={styles.rulerTime}>00:45.00</Text>
-                <Text style={styles.rulerTime}>{formatTime(durationSeconds || 60)}</Text>
-              </View>
+            <View style={styles.timeRowCompact}>
+              <Text style={styles.timeText}>{formatTime(positionSeconds)}</Text>
+              <Text style={styles.timeText}>{formatTime(durationSeconds)}</Text>
+            </View>
 
-              <View style={styles.timelineEditorCard}>
-                <View style={styles.tickRow}>
-                  {Array.from({ length: 36 }).map((_, idx) => (
-                    <View key={`tick-${idx}`} style={[styles.tick, idx % 3 === 0 ? styles.tickStrong : null]} />
-                  ))}
-                </View>
+            <TouchableOpacity
+              activeOpacity={1}
+              style={styles.timelineTrack}
+              onLayout={(e) => setTimelineWidth(e.nativeEvent.layout.width)}
+              onPress={(e) => {
+                if (!timelineWidth) return;
+                const p = e.nativeEvent.locationX / timelineWidth;
+                void jumpToProgress(p);
+              }}
+            >
+              <LinearGradient colors={["#24364e", "#2f4663", "#24364e"]} style={styles.timelineThumbs} />
+              <View style={[styles.timelinePlayhead, { left: `${durationSeconds ? Math.min(98, Math.max(0, (positionSeconds / durationSeconds) * 100)) : 0}%` }]} />
+            </TouchableOpacity>
 
-                <View style={styles.stripRow}>
-                  <View style={styles.handleLeft}>
-                    <View style={styles.handleBar} />
-                  </View>
-                  <View style={styles.timelineStrip}>
-                    <LinearGradient colors={["#1f2b3f", "#2d4159", "#1f2b3f"]} style={styles.timelineThumbnailMock} />
-                    <View style={styles.playhead} />
-                  </View>
-                  <View style={styles.handleRight}>
-                    <View style={styles.handleBar} />
-                  </View>
-                </View>
-
-                <View style={styles.waveRow}>
-                  {Array.from({ length: 88 }).map((_, idx) => (
-                    <View key={`wave-${idx}`} style={[styles.waveBar, { height: 6 + ((idx * 11) % 22) }]} />
-                  ))}
-                </View>
-
-                <View style={styles.segmentHeader}>
-                  <Text style={styles.segmentHeaderText}>{formatTime(cutStart)}</Text>
-                  <Text style={styles.segmentHeaderText}>{formatTime(cutEnd || durationSeconds)}</Text>
-                </View>
-              </View>
-
-              <View style={styles.toolDock}>
-                <View style={styles.toolDockRow}>
-                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("cut")} activeOpacity={0.9}>
-                    <MaterialCommunityIcons name="content-cut" size={28} color={tab === "cut" ? "#6ef94b" : "#9ea7b7"} />
-                    <Text style={[styles.toolDockText, tab === "cut" ? styles.toolDockTextActive : null]}>Cortar</Text>
+            <View style={styles.toolDock}>
+              <View style={styles.toolDockRow}>
+                {[
+                  { key: "cut", icon: "content-cut", label: "Cortar" },
+                  { key: "split", icon: "content-duplicate", label: "Dividir" },
+                  { key: "text", icon: "format-text", label: "Texto" },
+                  { key: "audio", icon: "music-note", label: "Audio" },
+                  { key: "effects", icon: "magic-staff", label: "Efeitos" },
+                  { key: "adjust", icon: "tune-variant", label: "Ajustes" },
+                ].map((item) => (
+                  <TouchableOpacity key={item.key} style={styles.toolDockItem} onPress={() => setActiveToolTab(item.key as ToolTab)} activeOpacity={0.9}>
+                    <MaterialCommunityIcons name={item.icon as any} size={26} color={tab === item.key ? "#6ef94b" : "#9ea7b7"} />
+                    <Text style={[styles.toolDockText, tab === item.key ? styles.toolDockTextActive : null]}>{item.label}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("split")} activeOpacity={0.9}>
-                    <MaterialCommunityIcons name="content-duplicate" size={28} color={tab === "split" ? "#6ef94b" : "#9ea7b7"} />
-                    <Text style={[styles.toolDockText, tab === "split" ? styles.toolDockTextActive : null]}>Dividir</Text>
+                ))}
+              </View>
+
+              {tab === "cut" ? (
+                <View style={styles.inlineButtons}>
+                  <TouchableOpacity style={styles.smallAction} onPress={markCutStart}>
+                    <Text style={styles.smallActionText}>Marcar inicio</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("text")} activeOpacity={0.9}>
-                    <MaterialCommunityIcons name="format-text" size={28} color={tab === "text" ? "#6ef94b" : "#9ea7b7"} />
-                    <Text style={[styles.toolDockText, tab === "text" ? styles.toolDockTextActive : null]}>Texto</Text>
+                  <TouchableOpacity style={styles.smallAction} onPress={markCutEnd}>
+                    <Text style={styles.smallActionText}>Marcar fim</Text>
                   </TouchableOpacity>
-                  <View style={styles.toolDockItem}>
-                    <MaterialCommunityIcons name="music-note" size={28} color="#7f8796" />
-                    <Text style={styles.toolDockText}>Audio</Text>
-                  </View>
-                  <View style={styles.toolDockItem}>
-                    <MaterialCommunityIcons name="magic-staff" size={28} color="#7f8796" />
-                    <Text style={styles.toolDockText}>Efeitos</Text>
-                  </View>
-                  <View style={styles.toolDockItem}>
-                    <MaterialCommunityIcons name="tune-variant" size={28} color="#7f8796" />
-                    <Text style={styles.toolDockText}>Ajustes</Text>
-                  </View>
+                  <TouchableOpacity style={styles.smallAction} onPress={resetCut}>
+                    <Text style={styles.smallActionText}>Resetar corte</Text>
+                  </TouchableOpacity>
                 </View>
+              ) : null}
 
-                {tab === "cut" ? (
-                  <View style={styles.toolInlineActions}>
-                    <View style={styles.inlineButtons}>
-                      <TouchableOpacity style={styles.smallAction} onPress={markCutStart}>
-                        <Text style={styles.smallActionText}>Marcar inicio</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={styles.smallAction} onPress={markCutEnd}>
-                        <Text style={styles.smallActionText}>Marcar fim</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={styles.smallAction} onPress={resetCut}>
-                        <Text style={styles.smallActionText}>Resetar</Text>
-                      </TouchableOpacity>
-                    </View>
+              {tab === "split" ? (
+                <View style={styles.inlineButtons}>
+                  <TouchableOpacity style={styles.smallAction} onPress={addSplitAtCurrentTime}>
+                    <Text style={styles.smallActionText}>Dividir no marcador</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.smallAction} onPress={clearSplits}>
+                    <Text style={styles.smallActionText}>Limpar divisoes</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
+              {tab === "text" ? (
+                <View style={styles.textPanel}>
+                  <View style={styles.captionModeRow}>
+                    <TouchableOpacity
+                      style={[styles.captionModeChip, captionMode === "auto" ? styles.captionModeChipActive : null]}
+                      onPress={() => {
+                        setCaptionMode("auto");
+                        logEditorEvent("manual_editor_caption", "caption_mode_changed", { mode: "auto" });
+                      }}
+                    >
+                      <Text style={[styles.captionModeText, captionMode === "auto" ? styles.captionModeTextActive : null]}>Legenda auto</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.captionModeChip, captionMode === "manual" ? styles.captionModeChipActive : null]}
+                      onPress={() => {
+                        setCaptionMode("manual");
+                        logEditorEvent("manual_editor_caption", "caption_mode_changed", { mode: "manual" });
+                      }}
+                    >
+                      <Text style={[styles.captionModeText, captionMode === "manual" ? styles.captionModeTextActive : null]}>Manual</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.captionModeChip, captionMode === "none" ? styles.captionModeChipActive : null]}
+                      onPress={() => {
+                        setCaptionMode("none");
+                        logEditorEvent("manual_editor_caption", "caption_mode_changed", { mode: "none" });
+                      }}
+                    >
+                      <Text style={[styles.captionModeText, captionMode === "none" ? styles.captionModeTextActive : null]}>Sem</Text>
+                    </TouchableOpacity>
                   </View>
-                ) : null}
-
-                {tab === "split" ? (
-                  <View style={styles.toolInlineActions}>
-                    <View style={styles.inlineButtons}>
-                      <TouchableOpacity style={styles.smallAction} onPress={addSplitAtCurrentTime}>
-                        <Text style={styles.smallActionText}>Dividir no tempo atual</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={styles.smallAction} onPress={clearSplits}>
-                        <Text style={styles.smallActionText}>Limpar divisoes</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ) : null}
-
-                {tab === "text" ? (
-                  <View style={styles.toolInlineActions}>
-                    <View style={styles.captionModeRow}>
-                      <TouchableOpacity style={[styles.captionModeChip, captionMode === "auto" ? styles.captionModeChipActive : null]} onPress={() => setCaptionMode("auto")}>
-                        <Text style={[styles.captionModeText, captionMode === "auto" ? styles.captionModeTextActive : null]}>Legenda auto</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.captionModeChip, captionMode === "manual" ? styles.captionModeChipActive : null]}
-                        onPress={() => setCaptionMode("manual")}
-                      >
-                        <Text style={[styles.captionModeText, captionMode === "manual" ? styles.captionModeTextActive : null]}>Legenda manual</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={[styles.captionModeChip, captionMode === "none" ? styles.captionModeChipActive : null]} onPress={() => setCaptionMode("none")}>
-                        <Text style={[styles.captionModeText, captionMode === "none" ? styles.captionModeTextActive : null]}>Sem legenda</Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {captionMode === "manual" ? (
-                      <>
-                        <View style={styles.manualRow}>
-                          <View style={styles.manualInputWrap}>
-                            <Text style={styles.inputLabel}>Inicio (s)</Text>
-                            <TextInput style={styles.timeInput} value={captionStart} onChangeText={setCaptionStart} keyboardType="decimal-pad" />
-                          </View>
-                          <View style={styles.manualInputWrap}>
-                            <Text style={styles.inputLabel}>Fim (s)</Text>
-                            <TextInput style={styles.timeInput} value={captionEnd} onChangeText={setCaptionEnd} keyboardType="decimal-pad" />
-                          </View>
+                  {captionMode === "manual" ? (
+                    <View style={styles.manualEditorBox}>
+                      <View style={styles.manualRow}>
+                        <View style={styles.manualInputWrap}>
+                          <Text style={styles.inputLabel}>Inicio</Text>
+                          <TextInput style={styles.timeInput} value={captionStart} onChangeText={setCaptionStart} keyboardType="decimal-pad" />
                         </View>
-                        <TextInput
-                          style={styles.captionInput}
-                          placeholder="Digite a legenda manual..."
-                          placeholderTextColor="#7f8797"
-                          value={captionDraft}
-                          onChangeText={setCaptionDraft}
-                        />
-                        <View style={styles.inlineButtons}>
-                          <TouchableOpacity style={styles.smallAction} onPress={useCurrentTimeForCaption}>
-                            <Text style={styles.smallActionText}>Usar tempo atual</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={styles.smallAction} onPress={addManualCaption}>
-                            <Text style={styles.smallActionText}>Adicionar legenda</Text>
+                        <View style={styles.manualInputWrap}>
+                          <Text style={styles.inputLabel}>Fim</Text>
+                          <TextInput style={styles.timeInput} value={captionEnd} onChangeText={setCaptionEnd} keyboardType="decimal-pad" />
+                        </View>
+                      </View>
+                      <TextInput
+                        style={styles.captionInput}
+                        placeholder="Texto da legenda"
+                        placeholderTextColor="#7f8797"
+                        value={captionDraft}
+                        onChangeText={setCaptionDraft}
+                      />
+                      <View style={styles.inlineButtons}>
+                        <TouchableOpacity style={styles.smallAction} onPress={useCurrentTimeForCaption}>
+                          <Text style={styles.smallActionText}>Usar marcador</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.smallAction} onPress={addManualCaption}>
+                          <Text style={styles.smallActionText}>Adicionar</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {manualCaptions.slice(-2).map((c) => (
+                        <View key={c.id} style={styles.captionItem}>
+                          <Text style={styles.captionItemText}>{formatTime(c.start)} - {formatTime(c.end)} · {c.text}</Text>
+                          <TouchableOpacity onPress={() => deleteCaption(c.id)}>
+                            <Text style={styles.captionDelete}>Excluir</Text>
                           </TouchableOpacity>
                         </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
 
-                        <View style={styles.captionList}>
-                          {manualCaptions.map((c) => (
-                            <View key={c.id} style={styles.captionItem}>
-                              <View style={{ flex: 1 }}>
-                                <Text style={styles.captionItemTime}>
-                                  {formatTime(c.start)} - {formatTime(c.end)}
-                                </Text>
-                                <Text style={styles.captionItemText}>{c.text}</Text>
-                              </View>
-                              <TouchableOpacity onPress={() => deleteCaption(c.id)}>
-                                <Text style={styles.captionDelete}>Excluir</Text>
-                              </TouchableOpacity>
-                            </View>
-                          ))}
-                          {!manualCaptions.length ? <Text style={styles.meta}>Sem legenda manual ainda.</Text> : null}
-                        </View>
-                      </>
-                    ) : null}
-                  </View>
-                ) : null}
-              </View>
+              {tab === "effects" ? (
+                <View style={styles.inlineButtons}>
+                  <TouchableOpacity style={styles.smallAction} onPress={() => setStatus("Filtro cinematico aplicado no preview.")}>
+                    <Text style={styles.smallActionText}>Cinematico</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.smallAction} onPress={() => setStatus("Filtro vibrante aplicado no preview.")}>
+                    <Text style={styles.smallActionText}>Vibrante</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
 
-              <View style={styles.bottomBarMock}>
-                <TouchableOpacity style={styles.bottomAction} onPress={() => void videoRef.current?.setPositionAsync(Math.max(0, (positionSeconds - 2) * 1000))}>
-                  <Ionicons name="play-skip-back" size={26} color="#ced6e5" />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.bottomPlay} onPress={() => void videoRef.current?.playAsync()}>
-                  <Ionicons name="play" size={34} color="#57ef2f" />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.bottomAction} onPress={() => void videoRef.current?.setPositionAsync(Math.min(durationSeconds, positionSeconds + 2) * 1000)}>
-                  <Ionicons name="play-skip-forward" size={26} color="#ced6e5" />
-                </TouchableOpacity>
-              </View>
+              {tab === "adjust" ? (
+                <View style={styles.inlineButtons}>
+                  <TouchableOpacity
+                    style={styles.smallAction}
+                    onPress={() =>
+                      setBrightness((v) => {
+                        const next = Number((v - 0.05).toFixed(2));
+                        logEditorEvent("manual_editor_adjust", "brightness_changed", { from: v, to: next });
+                        return next;
+                      })
+                    }
+                  >
+                    <Text style={styles.smallActionText}>Brilho -</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.smallAction}
+                    onPress={() =>
+                      setBrightness((v) => {
+                        const next = Number((v + 0.05).toFixed(2));
+                        logEditorEvent("manual_editor_adjust", "brightness_changed", { from: v, to: next });
+                        return next;
+                      })
+                    }
+                  >
+                    <Text style={styles.smallActionText}>Brilho +</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.smallAction}
+                    onPress={() =>
+                      setContrast((v) => {
+                        const next = Number(Math.max(0.6, v - 0.05).toFixed(2));
+                        logEditorEvent("manual_editor_adjust", "contrast_changed", { from: v, to: next });
+                        return next;
+                      })
+                    }
+                  >
+                    <Text style={styles.smallActionText}>Contraste -</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.smallAction}
+                    onPress={() =>
+                      setContrast((v) => {
+                        const next = Number((v + 0.05).toFixed(2));
+                        logEditorEvent("manual_editor_adjust", "contrast_changed", { from: v, to: next });
+                        return next;
+                      })
+                    }
+                  >
+                    <Text style={styles.smallActionText}>Contraste +</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.meta}>Brilho {brightness.toFixed(2)} · Contraste {contrast.toFixed(2)}</Text>
+                </View>
+              ) : null}
+            </View>
 
+            <View style={styles.editorFooter}>
               <Text style={styles.statusText}>{status}</Text>
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
-            </>
-          )}
-        </ScrollView>
+            </View>
+          </View>
+        )}
       </LinearGradient>
+
+      <Modal
+        visible={isFullscreen}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => {
+          setIsFullscreen(false);
+          logEditorEvent("manual_editor_transport", "fullscreen_close");
+        }}
+      >
+        <View style={styles.fullscreenWrap}>
+          {playbackUrl ? (
+            <Video
+              ref={videoRef}
+              source={{ uri: playbackUrl }}
+              style={styles.fullscreenVideo}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              onPlaybackStatusUpdate={(s: any) => {
+                if (!s.isLoaded) return;
+                setPositionSeconds((s.positionMillis || 0) / 1000);
+                setIsPlaying(Boolean(s.isPlaying));
+              }}
+            />
+          ) : null}
+          <TouchableOpacity
+            style={styles.closeFullscreenBtn}
+            onPress={() => {
+              setIsFullscreen(false);
+              logEditorEvent("manual_editor_transport", "fullscreen_close");
+            }}
+          >
+            <Text style={styles.closeFullscreenText}>Fechar</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -943,11 +1066,24 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     gap: 12,
   },
+  editorShell: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 8,
+  },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 2,
+  },
+  topBarCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 46,
   },
   backIcon: {
     width: 40,
@@ -1007,10 +1143,87 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.15)",
     backgroundColor: "#0b1018",
   },
+  videoWrap: {
+    borderRadius: 18,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "#0b1018",
+    position: "relative",
+  },
   player: {
     width: "100%",
     aspectRatio: 16 / 9,
     backgroundColor: "#090d14",
+  },
+  overlayControls: {
+    position: "absolute",
+    left: 8,
+    right: 8,
+    bottom: 8,
+    minHeight: 34,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(8,12,20,0.76)",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  overlayBtn: {
+    width: 34,
+    height: 26,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(21,27,37,0.8)",
+  },
+  overlayPlayBtn: {
+    width: 40,
+    height: 26,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(87,239,47,0.6)",
+    backgroundColor: "rgba(20,33,16,0.9)",
+  },
+  timeRowCompact: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 2,
+  },
+  timeText: {
+    color: "#d4dcec",
+    fontSize: 13,
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  timelineTrack: {
+    height: 62,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(11,16,25,0.95)",
+    overflow: "hidden",
+    position: "relative",
+  },
+  timelineThumbs: {
+    width: "100%",
+    height: "100%",
+  },
+  timelinePlayhead: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: "#61f33b",
+    shadowColor: "#61f33b",
+    shadowOpacity: 0.65,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 0 },
   },
   timerRow: {
     flexDirection: "row",
@@ -1242,6 +1455,17 @@ const styles = StyleSheet.create({
   toolDockTextActive: {
     color: "#78f758",
   },
+  textPanel: {
+    gap: 8,
+  },
+  manualEditorBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(13,18,28,0.92)",
+    padding: 8,
+    gap: 8,
+  },
   toolInlineActions: {
     gap: 8,
     paddingTop: 4,
@@ -1426,6 +1650,38 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  editorFooter: {
+    minHeight: 44,
+    justifyContent: "center",
+    gap: 4,
+  },
+  fullscreenWrap: {
+    flex: 1,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 10,
+  },
+  fullscreenVideo: {
+    width: "100%",
+    height: "88%",
+    backgroundColor: "#000",
+  },
+  closeFullscreenBtn: {
+    marginTop: 8,
+    borderRadius: 999,
+    minHeight: 42,
+    minWidth: 120,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#57ef2f",
+  },
+  closeFullscreenText: {
+    color: "#0f2508",
+    fontSize: 16,
+    fontFamily: realTheme.fonts.bodyBold,
   },
   errorText: {
     color: "#ff8f8f",
