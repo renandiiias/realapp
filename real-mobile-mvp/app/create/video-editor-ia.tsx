@@ -74,6 +74,22 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
   return "failed";
 }
 
+async function launchLibraryWithTimeout(timeoutMs = 12000): Promise<any> {
+  return Promise.race([
+    ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["videos"],
+      quality: 1,
+      allowsEditing: false,
+      allowsMultipleSelection: false,
+      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+      videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+    }),
+    new Promise<any>((_, reject) =>
+      setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+}
+
 export default function VideoEditorIaScreen() {
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("ia"));
   const [pickingVideo, setPickingVideo] = useState(false);
@@ -261,14 +277,7 @@ export default function VideoEditorIaScreen() {
         stage: "picker",
         event: "image_library_open_start",
       });
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["videos"],
-        quality: 1,
-        allowsEditing: false,
-        allowsMultipleSelection: false,
-        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-      });
+      const result = await launchLibraryWithTimeout();
       if (result.canceled) {
         void sendVideoClientLog({
           baseUrl: videoApiBase,

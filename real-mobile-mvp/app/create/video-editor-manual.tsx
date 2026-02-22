@@ -107,6 +107,22 @@ function splitSegments(cutStart: number, cutEnd: number, splitPoints: number[], 
   return result.filter((s) => s.end - s.start > 0.04);
 }
 
+async function launchLibraryWithTimeout(timeoutMs = 12000): Promise<any> {
+  return Promise.race([
+    ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["videos"],
+      quality: 1,
+      allowsEditing: false,
+      allowsMultipleSelection: false,
+      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+      videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+    }),
+    new Promise<any>((_, reject) =>
+      setTimeout(() => reject(new Error(`image_library_timeout_${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+}
+
 export default function VideoEditorManualScreen() {
   const videoRef = useRef<Video | null>(null);
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("manual"));
@@ -382,31 +398,7 @@ export default function VideoEditorManualScreen() {
         stage: "picker",
         event: "image_library_open_start",
       });
-      let result: ImagePicker.ImagePickerResult;
-      try {
-        result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ["videos"],
-          quality: 1,
-          allowsEditing: false,
-          allowsMultipleSelection: false,
-          preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-          videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-        });
-      } catch (modernPickerError) {
-        void sendVideoClientLog({
-          baseUrl: videoApiBase,
-          traceId: nextTraceId,
-          stage: "picker",
-          event: "image_library_modern_api_failed_try_legacy",
-          level: "warn",
-          meta: { raw_error: modernPickerError instanceof Error ? modernPickerError.message : String(modernPickerError ?? "") },
-        });
-        result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: (ImagePicker as any).MediaTypeOptions?.Videos ?? (ImagePicker as any).MediaTypeOptions?.All,
-          quality: 1,
-          allowsEditing: false,
-        } as any);
-      }
+      const result = await launchLibraryWithTimeout();
       if (result.canceled || !result.assets?.[0]) {
         void sendVideoClientLog({
           baseUrl: videoApiBase,
@@ -437,6 +429,7 @@ export default function VideoEditorManualScreen() {
         level: "warn",
         meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
       });
+      setStatus("Galeria instavel no iPhone. Abrindo fallback de arquivos...");
       await new Promise((r) => setTimeout(r, 700));
       const fallbackOk = await pickVideoWithDocumentPicker();
       if (!fallbackOk) setError(pickerErrorMessage(pickError));
