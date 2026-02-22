@@ -393,7 +393,7 @@ export default function SiteCreatorV3() {
               {!loading && !hasPreview ? (
                 <View style={styles.centerState}>
                   <Text style={styles.centerTitle}>Digite abaixo como seu site deve ser</Text>
-                  <Text style={styles.centerText}>Resultado em cima, edição por prompt embaixo. Sem modo modular.</Text>
+                  <Text style={styles.centerText}>Descreva seu objetivo e estilo para começar.</Text>
                 </View>
               ) : null}
             </View>
