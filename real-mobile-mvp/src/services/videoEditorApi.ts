@@ -40,6 +40,11 @@ type TemplateListResponse = {
   data: CaptionTemplate[];
 };
 
+function traceHeaders(traceId?: string): Record<string, string> {
+  if (!traceId?.trim()) return {};
+  return { "x-trace-id": traceId.trim() };
+}
+
 async function extractErrorMessage(response: Response): Promise<string> {
   let message = "Erro inesperado ao processar a solicitacao.";
   try {
@@ -80,6 +85,7 @@ export async function submitCaptionJob(params: {
   file: { uri: string; name: string; type: string };
   templateId?: string;
   instructions?: string;
+  traceId?: string;
 }): Promise<VideoItem> {
   const safeBase = cleanBaseUrl(params.baseUrl);
   const body = new FormData();
@@ -101,6 +107,7 @@ export async function submitCaptionJob(params: {
 
   const response = await fetch(`${safeBase}/v1/videos/captions`, {
     method: "POST",
+    headers: traceHeaders(params.traceId),
     body,
   });
   return parseResponse<VideoItem>(response);
@@ -111,6 +118,7 @@ export async function submitVideoEditJob(params: {
   file: { uri: string; name: string; type: string };
   mode: AiEditMode;
   instructions?: string;
+  traceId?: string;
 }): Promise<{ video: VideoItem; compatibilityMode: boolean }> {
   const safeBase = cleanBaseUrl(params.baseUrl);
 
@@ -131,6 +139,7 @@ export async function submitVideoEditJob(params: {
 
   const editsResponse = await fetch(`${safeBase}/v1/videos/edits`, {
     method: "POST",
+    headers: traceHeaders(params.traceId),
     body: editsBody,
   });
 
@@ -158,6 +167,7 @@ export async function submitVideoEditJob(params: {
   }
   const legacyResponse = await fetch(`${safeBase}/v1/videos/captions`, {
     method: "POST",
+    headers: traceHeaders(params.traceId),
     body: legacyBody,
   });
   const legacyCreated = await parseResponse<VideoItem>(legacyResponse);
@@ -168,6 +178,7 @@ export async function submitManualSourceJob(params: {
   baseUrl: string;
   file: { uri: string; name: string; type: string };
   language?: string;
+  traceId?: string;
 }): Promise<VideoItem> {
   const safeBase = cleanBaseUrl(params.baseUrl);
   const body = new FormData();
@@ -183,22 +194,25 @@ export async function submitManualSourceJob(params: {
 
   const response = await fetch(`${safeBase}/v1/videos/manual-source`, {
     method: "POST",
+    headers: traceHeaders(params.traceId),
     body,
   });
   return parseResponse<VideoItem>(response);
 }
 
-export async function fetchVideo(baseUrl: string, videoId: string): Promise<VideoItem> {
+export async function fetchVideo(baseUrl: string, videoId: string, traceId?: string): Promise<VideoItem> {
   const safeBase = cleanBaseUrl(baseUrl);
-  const response = await fetch(`${safeBase}/v1/videos/${videoId}`);
+  const response = await fetch(`${safeBase}/v1/videos/${videoId}`, {
+    headers: traceHeaders(traceId),
+  });
   return parseResponse<VideoItem>(response);
 }
 
-export async function createManualEditorSession(baseUrl: string, videoId: string, orderId?: string): Promise<ManualEditorSession> {
+export async function createManualEditorSession(baseUrl: string, videoId: string, orderId?: string, traceId?: string): Promise<ManualEditorSession> {
   const safeBase = cleanBaseUrl(baseUrl);
   const response = await fetch(`${safeBase}/v1/videos/${videoId}/editor-session`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...traceHeaders(traceId) },
     body: JSON.stringify({ order_id: orderId || null }),
   });
   return parseResponse<ManualEditorSession>(response);

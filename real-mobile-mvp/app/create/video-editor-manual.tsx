@@ -7,6 +7,7 @@ import { router } from "expo-router";
 import { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { createManualEditorSession, fetchVideo, getDownloadUrl, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
+import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
@@ -108,6 +109,7 @@ function splitSegments(cutStart: number, cutEnd: number, splitPoints: number[], 
 
 export default function VideoEditorManualScreen() {
   const videoRef = useRef<Video | null>(null);
+  const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("manual"));
 
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [sourceVideo, setSourceVideo] = useState<VideoItem | null>(null);
@@ -145,8 +147,24 @@ export default function VideoEditorManualScreen() {
 
   const editorReady = Boolean(sourceVideo?.status === "COMPLETE" && sessionToken && playbackUrl);
 
-  const applyPicked = (asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null }) => {
+  const applyPicked = (
+    asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null },
+    traceId = flowTraceId,
+  ) => {
     const duration = normalizeDuration(asset.duration);
+    void sendVideoClientLog({
+      baseUrl: videoApiBase,
+      traceId,
+      stage: "picker",
+      event: "asset_received",
+      meta: {
+        uri: sanitizeUri(asset.uri),
+        file_name: asset.fileName || null,
+        mime: asset.mimeType || null,
+        duration_seconds: duration,
+        size_bytes: asset.fileSize ?? null,
+      },
+    });
     if (duration && duration > MAX_VIDEO_SECONDS) {
       setError("Use um video de ate 5 minutos.");
       return null;
@@ -167,7 +185,7 @@ export default function VideoEditorManualScreen() {
 
   const pollUntilDone = async (videoId: string): Promise<VideoItem> => {
     for (let i = 0; i < 120; i += 1) {
-      const current = await fetchVideo(videoApiBase, videoId);
+      const current = await fetchVideo(videoApiBase, videoId, flowTraceId);
       setSourceVideo(current);
       if (current.status === "COMPLETE" || current.status === "FAILED") return current;
       await new Promise((r) => setTimeout(r, 2000));
@@ -185,25 +203,61 @@ export default function VideoEditorManualScreen() {
     setStatus("Subindo video para preparar editor manual...");
 
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_prepare",
+        event: "submit_manual_source_start",
+        meta: {
+          uri: sanitizeUri(file.uri),
+          file_name: file.name,
+          mime: file.mimeType,
+          duration_seconds: file.durationSeconds,
+          size_bytes: file.sizeBytes ?? null,
+        },
+      });
       const created = await submitManualSourceJob({
         baseUrl: videoApiBase,
         file: { uri: file.uri, name: file.name, type: file.mimeType },
+        traceId: flowTraceId,
       });
       setSourceVideo(created);
       setStatus("Processando video para editor manual...");
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_prepare",
+        event: "submit_manual_source_ok",
+        meta: { video_id: created.id },
+      });
 
       const completed = await pollUntilDone(created.id);
       if (completed.status !== "COMPLETE") {
         throw new Error(completed.error?.message || "Falha ao preparar video manual.");
       }
 
-      const session = await createManualEditorSession(videoApiBase, completed.id);
+      const session = await createManualEditorSession(videoApiBase, completed.id, undefined, flowTraceId);
       setSessionToken(session.sessionToken);
       setStatus("Editor manual pronto. Ajuste e exporte.");
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_prepare",
+        event: "manual_editor_session_ready",
+        meta: { video_id: completed.id, edit_session_id: session.editSessionId },
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Falha ao preparar editor manual.";
       setError(humanizeVideoError(message));
       setStatus("Falha no preparo do editor manual.");
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_prepare",
+        event: "manual_prepare_failed",
+        level: "error",
+        meta: { message },
+      });
     } finally {
       setLoadingSource(false);
     }
@@ -211,37 +265,90 @@ export default function VideoEditorManualScreen() {
 
   const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "picker",
+        event: "document_picker_start",
+      });
       const result = await DocumentPicker.getDocumentAsync({
         type: "video/*",
         multiple: false,
         copyToCacheDirectory: true,
       });
-      if (result.canceled || !result.assets?.[0]) return false;
-      const normalized = applyPicked({
-        uri: result.assets[0].uri,
-        fileName: result.assets[0].name,
-        mimeType: result.assets[0].mimeType,
-        fileSize: result.assets[0].size,
-      });
+      if (result.canceled || !result.assets?.[0]) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: flowTraceId,
+          stage: "picker",
+          event: "document_picker_canceled_or_empty",
+        });
+        return false;
+      }
+      const normalized = applyPicked(
+        {
+          uri: result.assets[0].uri,
+          fileName: result.assets[0].name,
+          mimeType: result.assets[0].mimeType,
+          fileSize: result.assets[0].size,
+        },
+        flowTraceId,
+      );
       if (!normalized) return false;
       setPicked(normalized);
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "picker",
+        event: "document_picker_asset_ok",
+        meta: { uri: sanitizeUri(normalized.uri), file_name: normalized.name, mime: normalized.mimeType, duration_seconds: normalized.durationSeconds },
+      });
       await prepareManualEditor(normalized);
       return true;
     } catch (pickError) {
       setError(pickerErrorMessage(pickError));
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "picker",
+        event: "document_picker_failed",
+        level: "error",
+        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+      });
       return false;
     }
   };
 
   const pickVideoSmart = async () => {
     setError(null);
+    const nextTraceId = makeClientTraceId("manual");
+    setFlowTraceId(nextTraceId);
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_permission_request_start",
+      });
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_permission_result",
+        meta: { granted: permission.granted, canAskAgain: permission.canAskAgain, status: permission.status },
+      });
       if (!permission.granted) {
         setError("Permissao de galeria negada.");
         return;
       }
 
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_open_start",
+      });
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["videos"],
         quality: 1,
@@ -250,13 +357,36 @@ export default function VideoEditorManualScreen() {
         preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
         videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
       });
-      if (result.canceled || !result.assets?.[0]) return;
+      if (result.canceled || !result.assets?.[0]) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: nextTraceId,
+          stage: "picker",
+          event: result.canceled ? "image_library_canceled" : "image_library_empty_assets",
+        });
+        return;
+      }
 
-      const normalized = applyPicked(result.assets[0]);
+      const normalized = applyPicked(result.assets[0], nextTraceId);
       if (!normalized) return;
       setPicked(normalized);
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_asset_ok",
+        meta: { uri: sanitizeUri(normalized.uri), file_name: normalized.name, mime: normalized.mimeType, duration_seconds: normalized.durationSeconds },
+      });
       await prepareManualEditor(normalized);
     } catch (pickError) {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_failed_fallback_document_picker",
+        level: "warn",
+        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+      });
       const fallbackOk = await pickVideoWithDocumentPicker();
       if (!fallbackOk) setError(pickerErrorMessage(pickError));
     }
@@ -389,9 +519,21 @@ export default function VideoEditorManualScreen() {
     setStatus("Exportando versao manual...");
 
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_export",
+        event: "manual_export_start",
+        meta: {
+          base_video_id: sourceVideo.id,
+          segment_count: activeSegments.length,
+          caption_mode: captionMode,
+          manual_caption_count: manualCaptions.length,
+        },
+      });
       const response = await fetch(`${videoApiBase}/v1/videos/${sourceVideo.id}/manual-export`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-trace-id": flowTraceId },
         body: JSON.stringify({
           token: sessionToken,
           include_subtitles: captionMode !== "none",
@@ -416,13 +558,27 @@ export default function VideoEditorManualScreen() {
 
       const created = (await response.json()) as VideoItem;
       setStatus(`Exportacao iniciada: ${created.id}`);
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_export",
+        event: "manual_export_created",
+        meta: { output_video_id: created.id },
+      });
 
       for (let i = 0; i < 120; i += 1) {
-        const current = await fetchVideo(videoApiBase, created.id);
+        const current = await fetchVideo(videoApiBase, created.id, flowTraceId);
         if (current.status === "COMPLETE") {
           setSourceVideo(current);
           setStatus("Exportacao concluida. Video final pronto.");
           Alert.alert("Pronto", "Edicao manual concluida com sucesso.");
+          void sendVideoClientLog({
+            baseUrl: videoApiBase,
+            traceId: flowTraceId,
+            stage: "manual_export",
+            event: "manual_export_complete",
+            meta: { output_video_id: created.id },
+          });
           break;
         }
         if (current.status === "FAILED") {
@@ -434,6 +590,14 @@ export default function VideoEditorManualScreen() {
       const message = e instanceof Error ? e.message : "Falha na exportacao manual.";
       setError(humanizeVideoError(message));
       setStatus("Falha ao exportar edicao manual.");
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "manual_export",
+        event: "manual_export_failed",
+        level: "error",
+        meta: { message },
+      });
     } finally {
       setExporting(false);
     }

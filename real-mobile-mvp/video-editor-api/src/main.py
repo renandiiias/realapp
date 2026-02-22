@@ -859,6 +859,14 @@ class EditorSessionInput(BaseModel):
     order_id: Optional[str] = None
 
 
+class ClientEventInput(BaseModel):
+    trace_id: str = Field(..., min_length=4, max_length=120)
+    stage: str = Field(..., min_length=1, max_length=80)
+    event: str = Field(..., min_length=1, max_length=120)
+    level: str = Field(default="info", min_length=1, max_length=16)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
 def resolve_existing_path(raw: str) -> Path:
     candidate = Path(raw)
     if candidate.exists():
@@ -1554,11 +1562,32 @@ def jobs_get(job_id: str):
     return job_row_to_item(row)
 
 
+@app.post("/v1/debug/client-events")
+def client_events(payload: ClientEventInput, request: Request):
+    request_trace = request.state.trace_id
+    trace_id = (payload.trace_id or "").strip()[:120] or request_trace
+    safe_level = payload.level.lower().strip()
+    if safe_level not in {"info", "warn", "error"}:
+        safe_level = "info"
+    meta = payload.meta or {}
+    log_event(
+        safe_level,
+        trace_id,
+        f"client_{payload.stage.strip()[:80]}",
+        payload.event.strip()[:120],
+        **meta,
+        client_ip=request.client.host if request.client else None,
+        user_agent=(request.headers.get("user-agent", "")[:240]),
+    )
+    return {"ok": True}
+
+
 @app.get("/internal/logs/tail")
 def logs_tail(
     request: Request,
     videoId: Optional[str] = Query(default=None),
     orderId: Optional[str] = Query(default=None),
+    traceId: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
     x_api_key: Optional[str] = Header(default=None),
 ):
@@ -1580,11 +1609,13 @@ def logs_tail(
                     continue
                 if orderId and str(m.get("order_id", "")) != str(orderId):
                     continue
+                if traceId and str(item.get("trace_id", "")) != str(traceId):
+                    continue
                 out.append(item)
         if len(out) >= limit:
             break
 
-    log_event("info", trace_id, "logs", "tail_read", count=len(out), video_id=videoId, order_id=orderId, limit=limit)
+    log_event("info", trace_id, "logs", "tail_read", count=len(out), video_id=videoId, order_id=orderId, trace_id_filter=traceId, limit=limit)
     return {"count": len(out), "items": out}
 
 

@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
+import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
@@ -74,6 +75,7 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 }
 
 export default function VideoEditorIaScreen() {
+  const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("ia"));
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
 
@@ -94,19 +96,43 @@ export default function VideoEditorIaScreen() {
     if (video.status !== "QUEUED" && video.status !== "PROCESSING") return;
 
     const timer = setInterval(() => {
-      void fetchVideo(videoApiBase, video.id)
+      void fetchVideo(videoApiBase, video.id, flowTraceId)
         .then((current) => setVideo(current))
         .catch((refreshError) => {
           const message = refreshError instanceof Error ? refreshError.message : "Nao foi possivel atualizar o status.";
           setError(humanizeVideoError(message));
+          void sendVideoClientLog({
+            baseUrl: videoApiBase,
+            traceId: flowTraceId,
+            stage: "poll",
+            event: "status_refresh_failed",
+            level: "error",
+            meta: { video_id: video.id, message },
+          });
         });
     }, 2000);
 
     return () => clearInterval(timer);
   }, [hasRemoteEditor, video, videoApiBase]);
 
-  const applyPicked = (asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null }) => {
+  const applyPicked = (
+    asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null },
+    traceId = flowTraceId,
+  ) => {
     const durationSeconds = normalizeDuration(asset.duration);
+    void sendVideoClientLog({
+      baseUrl: videoApiBase,
+      traceId,
+      stage: "picker",
+      event: "asset_received",
+      meta: {
+        uri: sanitizeUri(asset.uri),
+        file_name: asset.fileName || null,
+        mime: asset.mimeType || null,
+        duration_seconds: durationSeconds,
+        size_bytes: asset.fileSize ?? null,
+      },
+    });
     if (durationSeconds && durationSeconds > MAX_VIDEO_SECONDS) {
       setError("Use um video de ate 5 minutos.");
       return;
@@ -131,35 +157,81 @@ export default function VideoEditorIaScreen() {
 
   const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "picker",
+        event: "document_picker_start",
+      });
       const result = await DocumentPicker.getDocumentAsync({
         type: "video/*",
         multiple: false,
         copyToCacheDirectory: true,
       });
-      if (result.canceled || !result.assets?.[0]) return false;
+      if (result.canceled || !result.assets?.[0]) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: flowTraceId,
+          stage: "picker",
+          event: "document_picker_canceled_or_empty",
+        });
+        return false;
+      }
       const file = result.assets[0];
-      applyPicked({
-        uri: file.uri,
-        fileName: file.name,
-        mimeType: file.mimeType,
-        fileSize: file.size,
-      });
+      applyPicked(
+        {
+          uri: file.uri,
+          fileName: file.name,
+          mimeType: file.mimeType,
+          fileSize: file.size,
+        },
+        flowTraceId,
+      );
       return true;
     } catch (pickError) {
       setError(pickerErrorMessage(pickError));
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "picker",
+        event: "document_picker_failed",
+        level: "error",
+        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+      });
       return false;
     }
   };
 
   const pickVideoFromLibrary = async () => {
     setError(null);
+    const nextTraceId = makeClientTraceId("ia");
+    setFlowTraceId(nextTraceId);
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_permission_request_start",
+      });
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_permission_result",
+        meta: { granted: permission.granted, canAskAgain: permission.canAskAgain, status: permission.status },
+      });
       if (!permission.granted) {
         setError("Permissao de galeria negada.");
         return;
       }
 
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_open_start",
+      });
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["videos"],
         quality: 1,
@@ -168,14 +240,36 @@ export default function VideoEditorIaScreen() {
         preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
         videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
       });
-      if (result.canceled) return;
+      if (result.canceled) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: nextTraceId,
+          stage: "picker",
+          event: "image_library_canceled",
+        });
+        return;
+      }
       if (!result.assets?.[0]) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: nextTraceId,
+          stage: "picker",
+          event: "image_library_empty_assets_fallback_document_picker",
+        });
         const fallbackOk = await pickVideoWithDocumentPicker();
         if (!fallbackOk) setError("Nao foi possivel carregar da galeria. Tente novamente pelo fallback.");
         return;
       }
-      applyPicked(result.assets[0]);
+      applyPicked(result.assets[0], nextTraceId);
     } catch (pickError) {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: nextTraceId,
+        stage: "picker",
+        event: "image_library_failed_fallback_document_picker",
+        level: "warn",
+        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+      });
       const fallbackOk = await pickVideoWithDocumentPicker();
       if (fallbackOk) return;
       if (isIosPhotos3164(pickError)) {
@@ -195,6 +289,19 @@ export default function VideoEditorIaScreen() {
     setSubmitting(true);
     setError(null);
     try {
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "upload",
+        event: "submit_video_edit_start",
+        meta: {
+          mode: aiMode,
+          uri: sanitizeUri(picked.uri),
+          file_name: picked.name,
+          mime: picked.mimeType,
+          size_bytes: picked.sizeBytes ?? null,
+        },
+      });
       const created = await submitVideoEditJob({
         baseUrl: videoApiBase,
         file: {
@@ -203,11 +310,27 @@ export default function VideoEditorIaScreen() {
           type: picked.mimeType,
         },
         mode: aiMode,
+        traceId: flowTraceId,
       });
       setVideo(created.video);
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "upload",
+        event: "submit_video_edit_ok",
+        meta: { video_id: created.video.id, compatibility_mode: created.compatibilityMode },
+      });
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Nao foi possivel iniciar a edicao.";
       setError(humanizeVideoError(message));
+      void sendVideoClientLog({
+        baseUrl: videoApiBase,
+        traceId: flowTraceId,
+        stage: "upload",
+        event: "submit_video_edit_failed",
+        level: "error",
+        meta: { message },
+      });
     } finally {
       setSubmitting(false);
     }
