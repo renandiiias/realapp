@@ -849,6 +849,10 @@ class ManualExportInput(BaseModel):
     start_seconds: float = 0.0
     end_seconds: Optional[float] = None
     include_subtitles: bool = True
+    caption_mode: str = "auto"  # auto | manual | none
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    manual_captions: list[dict[str, Any]] = Field(default_factory=list)
+    subtitles_language: str = "pt-BR"
 
 
 class EditorSessionInput(BaseModel):
@@ -864,6 +868,182 @@ def resolve_existing_path(raw: str) -> Path:
         if scoped.exists():
             return scoped
     raise HTTPException(status_code=400, detail=f"Arquivo nao encontrado: {raw}")
+
+
+def normalize_segments(
+    segments: list[dict[str, Any]],
+    default_start: float,
+    default_end: Optional[float],
+    total_duration: float,
+) -> list[tuple[float, float]]:
+    normalized: list[tuple[float, float]] = []
+    if segments:
+        for seg in segments:
+            try:
+                st = max(0.0, float(seg.get("start_seconds", 0.0)))
+                en = float(seg.get("end_seconds", st))
+                enabled = bool(seg.get("enabled", True))
+            except Exception:
+                continue
+            if not enabled:
+                continue
+            st = min(st, total_duration)
+            en = min(max(st, en), total_duration)
+            if en - st >= 0.05:
+                normalized.append((st, en))
+    else:
+        st = max(0.0, float(default_start or 0.0))
+        en = float(default_end) if default_end is not None else total_duration
+        st = min(st, total_duration)
+        en = min(max(st, en), total_duration)
+        if en - st >= 0.05:
+            normalized.append((st, en))
+
+    normalized.sort(key=lambda x: (x[0], x[1]))
+    merged: list[tuple[float, float]] = []
+    for st, en in normalized:
+        if not merged:
+            merged.append((st, en))
+            continue
+        last_st, last_en = merged[-1]
+        if st <= last_en + 0.02:
+            merged[-1] = (last_st, max(last_en, en))
+        else:
+            merged.append((st, en))
+    return merged
+
+
+def concat_from_segments(source_path: Path, segments: list[tuple[float, float]], output_path: Path, trace_id: str, video_id: str):
+    work_tmp = WORK_DIR / f"manual_segments_{uuid.uuid4().hex[:10]}"
+    work_tmp.mkdir(parents=True, exist_ok=True)
+    segment_files: list[Path] = []
+    try:
+        for idx, (st, en) in enumerate(segments):
+            out_seg = work_tmp / f"seg_{idx:03d}.mp4"
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{st:.3f}",
+                "-to",
+                f"{en:.3f}",
+                "-i",
+                source_path.as_posix(),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                out_seg.as_posix(),
+            ]
+            run_cmd(cmd, trace_id=trace_id, stage="manual_segment_extract", video_id=video_id)
+            segment_files.append(out_seg)
+
+        if not segment_files:
+            shutil.copy2(source_path, output_path)
+            return
+
+        concat_list = work_tmp / "concat.txt"
+        concat_list.write_text("\n".join([f"file '{p.as_posix()}'" for p in segment_files]), encoding="utf-8")
+        cmd_concat = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concat_list.as_posix(),
+            "-c",
+            "copy",
+            output_path.as_posix(),
+        ]
+        try:
+            run_cmd(cmd_concat, trace_id=trace_id, stage="manual_segment_concat_copy", video_id=video_id)
+        except Exception:
+            cmd_reencode = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                concat_list.as_posix(),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                output_path.as_posix(),
+            ]
+            run_cmd(cmd_reencode, trace_id=trace_id, stage="manual_segment_concat_reencode", video_id=video_id)
+    finally:
+        shutil.rmtree(work_tmp, ignore_errors=True)
+
+
+def _sec_to_srt(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int(round((seconds - int(seconds)) * 1000))
+    if ms >= 1000:
+        s += 1
+        ms -= 1000
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def remap_manual_captions_from_source(manual_captions: list[dict[str, Any]], kept_segments: list[tuple[float, float]]) -> list[tuple[float, float, str]]:
+    mapped: list[tuple[float, float, str]] = []
+    for cap in manual_captions:
+        text = str(cap.get("text", "")).strip()
+        if not text:
+            continue
+        try:
+            src_start = float(cap.get("start_seconds", 0.0))
+            src_end = float(cap.get("end_seconds", src_start + 1.2))
+        except Exception:
+            continue
+        if src_end <= src_start:
+            continue
+
+        acc = 0.0
+        for seg_st, seg_en in kept_segments:
+            seg_len = seg_en - seg_st
+            ov_st = max(src_start, seg_st)
+            ov_en = min(src_end, seg_en)
+            if ov_en > ov_st:
+                out_st = acc + (ov_st - seg_st)
+                out_en = acc + (ov_en - seg_st)
+                if out_en - out_st >= 0.1:
+                    mapped.append((out_st, out_en, text))
+            acc += seg_len
+    return mapped
+
+
+def write_manual_srt(captions: list[tuple[float, float, str]], srt_path: Path):
+    lines: list[str] = []
+    for idx, (st, en, text) in enumerate(captions, start=1):
+        lines.extend(
+            [
+                str(idx),
+                f"{_sec_to_srt(st)} --> {_sec_to_srt(en)}",
+                text,
+                "",
+            ]
+        )
+    srt_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
 def create_job(job_type: str, video_id: Optional[str] = None) -> str:
@@ -1177,43 +1357,88 @@ def manual_export(video_id: str, payload: ManualExportInput, request: Request, b
 
     start_s = max(0.0, float(payload.start_seconds or 0.0))
     end_s = float(payload.end_seconds) if payload.end_seconds is not None else None
+    total_duration = ffprobe_duration(copied_input, trace_id=trace_id, video_id=manual_video_id)
+    normalized_segments = normalize_segments(payload.segments, start_s, end_s, total_duration)
+    caption_mode = (payload.caption_mode or "auto").strip().lower()
+    if caption_mode not in {"auto", "manual", "none"}:
+        caption_mode = "auto"
+    log_event(
+        "info",
+        trace_id,
+        "manual",
+        "manual_export_received",
+        video_id=manual_video_id,
+        base_video_id=video_id,
+        total_duration_sec=round(total_duration, 3),
+        segment_count=len(normalized_segments),
+        caption_mode=caption_mode,
+        include_subtitles=payload.include_subtitles,
+        manual_captions_count=len(payload.manual_captions or []),
+    )
 
     def run_manual_pipeline():
         try:
             upsert_video_status(manual_video_id, "PROCESSING", 0.1)
             inp = copied_input
-            trimmed = OUTPUT_DIR / f"manual_trim_{manual_video_id}.mp4"
+            trimmed = OUTPUT_DIR / f"manual_cut_{manual_video_id}.mp4"
             final = OUTPUT_DIR / f"final_{manual_video_id}.mp4"
+            auto_subs = OUTPUT_DIR / f"manual_auto_subs_{manual_video_id}.srt"
+            manual_subs = OUTPUT_DIR / f"manual_subs_{manual_video_id}.srt"
 
-            cmd = ["ffmpeg", "-y", "-ss", f"{start_s:.3f}", "-i", inp.as_posix()]
-            if end_s is not None and end_s > start_s:
-                cmd.extend(["-to", f"{end_s:.3f}"])
-            cmd.extend([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                trimmed.as_posix(),
-            ])
-            run_cmd(cmd, trace_id=trace_id, stage="manual_trim", video_id=manual_video_id)
+            if not normalized_segments:
+                raise RuntimeError("manual_no_valid_segments")
+
+            concat_from_segments(inp, normalized_segments, trimmed, trace_id=trace_id, video_id=manual_video_id)
             upsert_video_status(manual_video_id, "PROCESSING", 0.55)
 
-            subtitles_path = base_row["subtitles_path"]
             render_input = trimmed
-            if payload.include_subtitles and subtitles_path and Path(subtitles_path).exists():
-                with contextlib.suppress(Exception):
+            subtitles_status = "disabled"
+
+            if caption_mode != "none" and payload.include_subtitles:
+                try:
                     burn_tmp = OUTPUT_DIR / f"manual_captioned_{manual_video_id}.mp4"
-                    burn_subtitles(trimmed, Path(subtitles_path), burn_tmp, trace_id=trace_id, video_id=manual_video_id)
+                    if caption_mode == "manual":
+                        mapped_captions = remap_manual_captions_from_source(payload.manual_captions or [], normalized_segments)
+                        if not mapped_captions:
+                            raise RuntimeError("manual_captions_empty")
+                        write_manual_srt(mapped_captions, manual_subs)
+                        burn_subtitles(trimmed, manual_subs, burn_tmp, trace_id=trace_id, video_id=manual_video_id)
+                    else:
+                        whisper_transcribe_to_srt(
+                            trimmed,
+                            auto_subs,
+                            trace_id=trace_id,
+                            language=(payload.subtitles_language or base_row["language"] or "pt-BR"),
+                            video_id=manual_video_id,
+                        )
+                        burn_subtitles(trimmed, auto_subs, burn_tmp, trace_id=trace_id, video_id=manual_video_id)
                     render_input = burn_tmp
+                    subtitles_status = "applied"
+                except Exception as sub_error:
+                    subtitles_status = "failed"
+                    log_error(
+                        trace_id,
+                        "manual_subtitles",
+                        "manual_subtitles_failed_fallback",
+                        sub_error,
+                        video_id=manual_video_id,
+                        caption_mode=caption_mode,
+                    )
 
             deliver_social(render_input, final, trace_id=trace_id, video_id=manual_video_id)
-            upsert_video_status(manual_video_id, "COMPLETE", 1.0, completed=True, output_path=final)
+            upsert_video_status(
+                manual_video_id,
+                "COMPLETE",
+                1.0,
+                completed=True,
+                output_path=final,
+                subtitles_path=manual_subs if manual_subs.exists() else (auto_subs if auto_subs.exists() else None),
+                pipeline_timings={
+                    "segmentCount": len(normalized_segments),
+                    "captionMode": caption_mode,
+                    "subtitlesStatus": subtitles_status,
+                },
+            )
             log_event(
                 "info",
                 trace_id,
@@ -1223,6 +1448,9 @@ def manual_export(video_id: str, payload: ManualExportInput, request: Request, b
                 base_video_id=video_id,
                 output_path=final.as_posix(),
                 output_hash=short_hash(final),
+                segment_count=len(normalized_segments),
+                caption_mode=caption_mode,
+                subtitles_status=subtitles_status,
             )
         except Exception as error:
             upsert_video_status(

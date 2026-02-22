@@ -3,135 +3,355 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Real | Editor Manual</title>
+    <title>Real | Editor Visual Pro</title>
     <style>
       :root {
-        --real-green: #35e214;
-        --real-purple: #8e00a6;
-        --real-black: #1a1a1a;
-        --real-gray: #ededee;
+        --bg-0: #05070d;
+        --bg-1: #0a0f1d;
+        --card: rgba(11, 16, 27, 0.9);
+        --line: rgba(255, 255, 255, 0.14);
+        --text: #edf2fb;
+        --muted: #9ea8bb;
+        --green: #57ef2f;
+        --green-deep: #12350b;
+        --danger: #ff7d7d;
       }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: Montserrat, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: var(--real-gray);
-        background: radial-gradient(circle at 20% 10%, #263211 0%, #111111 44%, #0b0b0c 100%);
+        color: var(--text);
+        font-family: "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 8% 8%, rgba(72, 255, 26, 0.12), transparent 30%),
+          radial-gradient(circle at 85% 0%, rgba(22, 123, 255, 0.12), transparent 26%),
+          linear-gradient(180deg, var(--bg-1), var(--bg-0));
       }
       .wrap {
-        padding: 16px;
         max-width: 980px;
         margin: 0 auto;
+        padding: 14px;
+      }
+      .top {
+        display: grid;
+        grid-template-columns: 44px 1fr auto;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .icon-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(10, 14, 23, 0.85);
+        color: #fff;
+        cursor: pointer;
+        font-size: 22px;
+      }
+      .title {
+        text-align: center;
+        font-size: 26px;
+        font-weight: 900;
+        letter-spacing: 0.2px;
+      }
+      .btn-export {
+        border: 0;
+        min-height: 44px;
+        border-radius: 12px;
+        padding: 0 20px;
+        font-weight: 900;
+        font-size: 22px;
+        color: #102a0b;
+        background: linear-gradient(90deg, var(--green), #7cff5f);
+        cursor: pointer;
       }
       .card {
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 14px;
-        background: rgba(8, 8, 8, 0.78);
-        padding: 14px;
-        margin-bottom: 14px;
-      }
-      h1 {
-        margin: 0 0 6px;
-        font-size: 20px;
-      }
-      p {
-        margin: 0;
-        color: #c9c9cc;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: 20px;
+        padding: 12px;
+        margin-bottom: 10px;
       }
       video {
         width: 100%;
-        aspect-ratio: 9 / 16;
+        border-radius: 16px;
         background: #000;
-        border-radius: 12px;
-      }
-      .grid {
-        display: grid;
-        gap: 10px;
-      }
-      label {
-        font-size: 13px;
-        color: #bdbdc2;
-      }
-      input[type="range"] {
-        width: 100%;
-        accent-color: var(--real-green);
+        aspect-ratio: 9 / 16;
       }
       .row {
         display: flex;
-        justify-content: space-between;
         align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .time-main {
+        color: var(--green);
+        font-size: 44px;
+        font-weight: 900;
+      }
+      .time-total {
+        color: #d9e0ec;
+        font-size: 44px;
+        font-weight: 900;
+      }
+      .scrub {
+        width: 100%;
+        accent-color: var(--green);
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
         gap: 8px;
       }
-      .btn {
-        border: 0;
-        border-radius: 10px;
-        padding: 12px 14px;
-        font-weight: 700;
+      .ctrl {
+        min-height: 52px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(12, 18, 31, 0.95);
+        color: #e5ebf7;
+        font-size: 22px;
         cursor: pointer;
       }
-      .btn-primary {
-        background: linear-gradient(100deg, var(--real-green), #7df36b);
-        color: #10230a;
+      .ctrl.play {
+        color: #102a0b;
+        background: linear-gradient(90deg, rgba(87, 239, 47, 0.9), rgba(133, 255, 92, 0.92));
+        border-color: rgba(87, 239, 47, 0.8);
       }
-      .btn-secondary {
-        background: #1f1f22;
-        color: #efeff1;
-        border: 1px solid rgba(255, 255, 255, 0.15);
+      .ruler {
+        color: var(--muted);
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
       }
-      .kvs {
+      .segments {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding: 6px 0;
+      }
+      .segment-chip {
+        border: 1px solid rgba(255,255,255,0.18);
+        background: rgba(17, 23, 36, 0.9);
+        color: #e8edf8;
+        border-radius: 999px;
+        padding: 8px 12px;
+        white-space: nowrap;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .segment-chip.off {
+        opacity: 0.45;
+        text-decoration: line-through;
+      }
+      .menu {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+      .menu-btn {
+        min-height: 58px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(11, 16, 28, 0.95);
+        color: #cfd8ea;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .menu-btn.active {
+        border-color: rgba(87, 239, 47, 0.75);
+        background: rgba(87, 239, 47, 0.18);
+        color: #d9ffd0;
+      }
+      .panel { display: none; }
+      .panel.active { display: block; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .label { font-size: 13px; color: #dbe4f4; margin: 8px 0 4px; display: block; }
+      .field,
+      .num {
+        width: 100%;
+        min-height: 42px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(16, 21, 32, 0.95);
+        color: #f0f4fb;
+        padding: 10px 12px;
+      }
+      .grid2 {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
-        font-size: 13px;
+        gap: 8px;
+      }
+      .mini-row { display: flex; gap: 8px; }
+      .btn {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        min-height: 42px;
+        background: rgba(16, 21, 32, 0.95);
+        color: #e5ebf6;
+        font-weight: 700;
+        padding: 0 12px;
+        cursor: pointer;
+      }
+      .btn.green {
+        background: linear-gradient(90deg, var(--green), #7cff5f);
+        color: #102a0b;
+        border-color: rgba(87, 239, 47, 0.72);
+      }
+      .mode-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .mode-btn {
+        min-height: 40px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(16, 22, 34, 0.95);
+        color: #d7dff0;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .mode-btn.active {
+        border-color: rgba(87, 239, 47, 0.7);
+        background: rgba(87, 239, 47, 0.2);
+        color: #d9ffd0;
+      }
+      .cap-list {
+        max-height: 170px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(11, 16, 27, 0.6);
+      }
+      .cap-item {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding: 8px 10px;
+      }
+      .cap-item:last-child { border-bottom: 0; }
+      .cap-time { color: #9ce78a; font-size: 12px; font-weight: 700; }
+      .cap-text { color: #e8eefb; font-size: 13px; }
+      .danger {
+        color: #ffd3d3;
+        border-color: rgba(255, 125, 125, 0.5);
+        background: rgba(88, 20, 20, 0.45);
       }
       .status {
-        margin-top: 8px;
-        color: #c8f8be;
+        font-size: 13px;
+        color: #b8f5ac;
+        margin-top: 6px;
       }
-      @media (max-width: 640px) {
-        .kvs {
-          grid-template-columns: 1fr;
-        }
-      }
+      .status.error { color: var(--danger); }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <div class="card">
-        <h1>Editor manual da Real</h1>
-        <p>Se o corte automatico nao ficou ideal, ajuste inicio/fim e exporte sem sair do app.</p>
+      <div class="top">
+        <button id="backBtn" class="icon-btn" title="Voltar">&#8592;</button>
+        <div class="title">Editor Visual Pro</div>
+        <button id="exportBtnTop" class="btn-export">Exportar</button>
       </div>
 
       <div class="card">
         <video id="player" controls playsinline></video>
       </div>
 
-      <div class="card grid">
-        <div>
-          <label for="startRange">Inicio</label>
-          <input id="startRange" type="range" min="0" max="0" step="0.1" value="0" />
-        </div>
-        <div>
-          <label for="endRange">Fim</label>
-          <input id="endRange" type="range" min="0" max="0" step="0.1" value="0" />
-        </div>
+      <div class="card">
         <div class="row">
-          <label><input id="subtitleToggle" type="checkbox" checked /> Reaplicar legenda automatica</label>
-          <span id="durationLabel">0.0s</span>
+          <div id="currentTime" class="time-main">00:00.00</div>
+          <div id="totalTime" class="time-total">00:00.00</div>
         </div>
-        <div class="kvs">
-          <div><b>Inicio:</b> <span id="startLabel">0.0s</span></div>
-          <div><b>Fim:</b> <span id="endLabel">0.0s</span></div>
-          <div><b>Janela:</b> <span id="windowLabel">0.0s</span></div>
-          <div><b>Video:</b> <span id="videoLabel">-</span></div>
+        <input id="seekRange" class="scrub" type="range" min="0" max="0" step="0.01" value="0" />
+        <div class="controls" style="margin-top: 8px;">
+          <button id="jumpStartBtn" class="ctrl" title="Ir para inicio">&#8630;</button>
+          <button id="prevSegBtn" class="ctrl" title="Segmento anterior">&#9198;</button>
+          <button id="playBtn" class="ctrl play" title="Play/Pause">&#9658;</button>
+          <button id="nextSegBtn" class="ctrl" title="Proximo segmento">&#9197;</button>
+          <button id="addSplitQuickBtn" class="ctrl" title="Dividir aqui">&#10006;</button>
         </div>
       </div>
 
       <div class="card">
-        <div class="row">
-          <button class="btn btn-secondary" id="previewBtn">Preview do recorte</button>
-          <button class="btn btn-primary" id="exportBtn">Exportar versao manual</button>
+        <div class="ruler">
+          <span id="rulerA">00:00.00</span>
+          <span id="rulerB">00:15.00</span>
+          <span id="rulerC">00:30.00</span>
+          <span id="rulerD">00:45.00</span>
+          <span id="rulerE">00:60.00</span>
         </div>
-        <div class="status" id="status"></div>
+        <div id="segments" class="segments"></div>
+        <div class="muted">Toque num segmento para ligar/desligar. Isso aplica cortes apos dividir.</div>
+      </div>
+
+      <div class="card">
+        <div class="menu">
+          <button class="menu-btn active" data-tab="cut">Cortar</button>
+          <button class="menu-btn" data-tab="split">Dividir</button>
+          <button class="menu-btn" data-tab="text">Texto</button>
+        </div>
+      </div>
+
+      <div class="card panel active" id="panel-cut">
+        <div class="muted">Defina a janela base do video antes de dividir.</div>
+        <label class="label" for="trimStart">Inicio</label>
+        <input id="trimStart" class="num" type="number" min="0" step="0.01" value="0" />
+        <label class="label" for="trimEnd">Fim</label>
+        <input id="trimEnd" class="num" type="number" min="0" step="0.01" value="0" />
+        <div class="mini-row" style="margin-top: 8px;">
+          <button id="applyTrimBtn" class="btn green">Aplicar corte base</button>
+          <button id="resetTrimBtn" class="btn">Resetar corte</button>
+        </div>
+      </div>
+
+      <div class="card panel" id="panel-split">
+        <div class="muted">Use dividir para quebrar em trechos e desligar os que nao quer.</div>
+        <div class="mini-row">
+          <button id="addSplitBtn" class="btn green">Dividir no tempo atual</button>
+          <button id="clearSplitsBtn" class="btn">Limpar divisoes</button>
+        </div>
+        <div class="label">Pontos de divisao (s)</div>
+        <div id="splitList" class="cap-list"></div>
+      </div>
+
+      <div class="card panel" id="panel-text">
+        <div class="mode-row">
+          <button class="mode-btn active" data-caption-mode="auto">Legenda auto</button>
+          <button class="mode-btn" data-caption-mode="manual">Legenda manual</button>
+          <button class="mode-btn" data-caption-mode="none">Sem legenda</button>
+        </div>
+
+        <div id="manualCaptionWrap" style="display:none;">
+          <div class="grid2">
+            <div>
+              <label class="label" for="captionStart">Inicio (source s)</label>
+              <input id="captionStart" class="num" type="number" min="0" step="0.01" value="0" />
+            </div>
+            <div>
+              <label class="label" for="captionEnd">Fim (source s)</label>
+              <input id="captionEnd" class="num" type="number" min="0" step="0.01" value="1.6" />
+            </div>
+          </div>
+          <label class="label" for="captionText">Texto</label>
+          <textarea id="captionText" class="field" rows="3" placeholder="Digite a legenda manual..."></textarea>
+          <div class="mini-row" style="margin-top:8px;">
+            <button id="setCaptionFromPlayheadBtn" class="btn">Usar tempo atual</button>
+            <button id="addCaptionBtn" class="btn green">Adicionar legenda</button>
+          </div>
+          <div class="label">Legendas manuais</div>
+          <div id="captionList" class="cap-list"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="mini-row">
+          <button id="previewBtn" class="btn">Preview editado</button>
+          <button id="exportBtnBottom" class="btn green">Exportar versao manual</button>
+        </div>
+        <div id="status" class="status"></div>
       </div>
     </div>
 
@@ -139,120 +359,438 @@
       const params = new URLSearchParams(window.location.search);
       const videoId = params.get("videoId") || "";
       const token = params.get("token") || "";
-      const apiBase = `${window.location.origin}`;
+      const apiBase = window.location.origin;
 
       const player = document.getElementById("player");
-      const startRange = document.getElementById("startRange");
-      const endRange = document.getElementById("endRange");
-      const subtitleToggle = document.getElementById("subtitleToggle");
-      const durationLabel = document.getElementById("durationLabel");
-      const startLabel = document.getElementById("startLabel");
-      const endLabel = document.getElementById("endLabel");
-      const windowLabel = document.getElementById("windowLabel");
-      const status = document.getElementById("status");
-      const videoLabel = document.getElementById("videoLabel");
+      const statusEl = document.getElementById("status");
+      const seekRange = document.getElementById("seekRange");
+      const currentTimeEl = document.getElementById("currentTime");
+      const totalTimeEl = document.getElementById("totalTime");
+      const trimStartInput = document.getElementById("trimStart");
+      const trimEndInput = document.getElementById("trimEnd");
+      const segmentsEl = document.getElementById("segments");
+      const splitListEl = document.getElementById("splitList");
+      const captionListEl = document.getElementById("captionList");
+      const captionStartInput = document.getElementById("captionStart");
+      const captionEndInput = document.getElementById("captionEnd");
+      const captionTextInput = document.getElementById("captionText");
+      const manualCaptionWrap = document.getElementById("manualCaptionWrap");
 
-      const updateLabels = () => {
-        const s = Number(startRange.value || 0);
-        const e = Number(endRange.value || 0);
-        startLabel.textContent = `${s.toFixed(1)}s`;
-        endLabel.textContent = `${e.toFixed(1)}s`;
-        windowLabel.textContent = `${Math.max(0, e - s).toFixed(1)}s`;
+      const state = {
+        duration: 0,
+        trimStart: 0,
+        trimEnd: 0,
+        splitPoints: [],
+        segmentEnabled: [],
+        captionMode: "auto",
+        manualCaptions: [],
+        previewTimer: null,
       };
 
-      const postNative = (payload) => {
-        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+      function postNative(payload) {
+        if (window.ReactNativeWebView?.postMessage) {
           window.ReactNativeWebView.postMessage(JSON.stringify(payload));
         }
-      };
+      }
 
-      const setStatus = (txt) => {
-        status.textContent = txt;
-      };
+      function setStatus(text, isError = false) {
+        statusEl.textContent = text;
+        statusEl.classList.toggle("error", isError);
+      }
 
-      const clampRanges = () => {
-        const start = Number(startRange.value || 0);
-        const end = Number(endRange.value || 0);
-        if (start > end - 0.1) {
-          if (document.activeElement === startRange) {
-            endRange.value = String(Math.min(Number(endRange.max), start + 0.1));
-          } else {
-            startRange.value = String(Math.max(Number(startRange.min), end - 0.1));
-          }
+      function fmt(sec) {
+        const s = Math.max(0, Number(sec || 0));
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return `${String(m).padStart(2, "0")}:${r.toFixed(2).padStart(5, "0")}`;
+      }
+
+      function recalcRuler() {
+        const d = state.duration || 1;
+        const marks = [0, 0.25, 0.5, 0.75, 1];
+        const ids = ["rulerA", "rulerB", "rulerC", "rulerD", "rulerE"];
+        marks.forEach((pct, i) => {
+          const el = document.getElementById(ids[i]);
+          if (el) el.textContent = fmt(d * pct);
+        });
+      }
+
+      function parseNum(v, fallback = 0) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+      }
+
+      function clampTrim() {
+        state.trimStart = Math.max(0, Math.min(parseNum(trimStartInput.value, 0), state.duration));
+        state.trimEnd = Math.max(state.trimStart + 0.05, Math.min(parseNum(trimEndInput.value, state.duration), state.duration));
+        trimStartInput.value = String(state.trimStart.toFixed(2));
+        trimEndInput.value = String(state.trimEnd.toFixed(2));
+      }
+
+      function buildSegments() {
+        clampTrim();
+        const points = [state.trimStart, ...state.splitPoints.filter((p) => p > state.trimStart && p < state.trimEnd), state.trimEnd]
+          .sort((a, b) => a - b)
+          .filter((p, i, arr) => i === 0 || Math.abs(p - arr[i - 1]) >= 0.03);
+
+        const segments = [];
+        for (let i = 0; i < points.length - 1; i += 1) {
+          const st = points[i];
+          const en = points[i + 1];
+          if (en - st >= 0.05) segments.push({ start_seconds: st, end_seconds: en, enabled: true });
         }
-        updateLabels();
-      };
 
-      const loadVideo = async () => {
-        if (!videoId || !token) {
-          setStatus("Sessao invalida.");
+        if (state.segmentEnabled.length === segments.length) {
+          segments.forEach((seg, i) => {
+            seg.enabled = state.segmentEnabled[i];
+          });
+        } else {
+          state.segmentEnabled = segments.map(() => true);
+        }
+        return segments;
+      }
+
+      function renderSegments() {
+        const segments = buildSegments();
+        segmentsEl.innerHTML = "";
+        segments.forEach((seg, i) => {
+          const btn = document.createElement("button");
+          btn.className = `segment-chip${seg.enabled ? "" : " off"}`;
+          btn.textContent = `S${i + 1} ${fmt(seg.start_seconds)}-${fmt(seg.end_seconds)}`;
+          btn.addEventListener("click", () => {
+            state.segmentEnabled[i] = !state.segmentEnabled[i];
+            renderSegments();
+          });
+          segmentsEl.appendChild(btn);
+        });
+      }
+
+      function renderSplits() {
+        splitListEl.innerHTML = "";
+        if (!state.splitPoints.length) {
+          const empty = document.createElement("div");
+          empty.className = "cap-item";
+          empty.innerHTML = `<div class=\"cap-text\">Nenhuma divisao adicionada.</div>`;
+          splitListEl.appendChild(empty);
           return;
         }
-        videoLabel.textContent = videoId;
-        player.src = `${apiBase}/v1/videos/${videoId}/content`;
-        const videoMeta = await fetch(`${apiBase}/v1/videos/${videoId}`);
-        const data = await videoMeta.json();
-        if (!videoMeta.ok) {
-          setStatus(data.detail || "Falha ao carregar video.");
+        state.splitPoints.sort((a, b) => a - b);
+        state.splitPoints.forEach((v, idx) => {
+          const row = document.createElement("div");
+          row.className = "cap-item";
+          row.innerHTML = `<div><div class=\"cap-time\">${fmt(v)}</div><div class=\"cap-text\">Ponto ${idx + 1}</div></div>`;
+          const remove = document.createElement("button");
+          remove.className = "btn danger";
+          remove.textContent = "Remover";
+          remove.addEventListener("click", () => {
+            state.splitPoints.splice(idx, 1);
+            renderSplits();
+            renderSegments();
+          });
+          row.appendChild(remove);
+          splitListEl.appendChild(row);
+        });
+      }
+
+      function renderCaptions() {
+        captionListEl.innerHTML = "";
+        if (!state.manualCaptions.length) {
+          const empty = document.createElement("div");
+          empty.className = "cap-item";
+          empty.innerHTML = `<div class=\"cap-text\">Sem legenda manual ainda.</div>`;
+          captionListEl.appendChild(empty);
           return;
         }
-        const progress = Math.round((data.progress || 0) * 100);
-        setStatus(`Video carregado. Status: ${data.status}. Progresso: ${progress}%`);
-      };
+        state.manualCaptions.forEach((cap, idx) => {
+          const row = document.createElement("div");
+          row.className = "cap-item";
+          row.innerHTML = `
+            <div>
+              <div class=\"cap-time\">${fmt(cap.start_seconds)} - ${fmt(cap.end_seconds)}</div>
+              <div class=\"cap-text\">${cap.text}</div>
+            </div>
+          `;
+          const remove = document.createElement("button");
+          remove.className = "btn danger";
+          remove.textContent = "Excluir";
+          remove.addEventListener("click", () => {
+            state.manualCaptions.splice(idx, 1);
+            renderCaptions();
+          });
+          row.appendChild(remove);
+          captionListEl.appendChild(row);
+        });
+      }
 
-      player.addEventListener("loadedmetadata", () => {
-        const duration = Number(player.duration || 0);
-        durationLabel.textContent = `${duration.toFixed(1)}s`;
-        startRange.max = String(duration);
-        endRange.max = String(duration);
-        endRange.value = String(duration);
-        updateLabels();
-      });
+      function updateTimeUi() {
+        const cur = parseNum(player.currentTime, 0);
+        currentTimeEl.textContent = fmt(cur);
+        totalTimeEl.textContent = fmt(state.duration);
+        seekRange.value = String(cur);
+      }
 
-      startRange.addEventListener("input", clampRanges);
-      endRange.addEventListener("input", clampRanges);
+      function nextEnabledSegmentFrom(time) {
+        const segments = buildSegments().filter((s) => s.enabled);
+        for (let i = 0; i < segments.length; i += 1) {
+          if (time < segments[i].end_seconds - 0.02) return { seg: segments[i], idx: i, segments };
+        }
+        return null;
+      }
 
-      document.getElementById("previewBtn").addEventListener("click", () => {
-        const s = Number(startRange.value || 0);
-        const e = Number(endRange.value || 0);
-        player.currentTime = s;
+      function previewEdited() {
+        if (state.previewTimer) {
+          clearInterval(state.previewTimer);
+          state.previewTimer = null;
+        }
+        const first = nextEnabledSegmentFrom(-1);
+        if (!first) {
+          setStatus("Ative pelo menos um segmento para preview.", true);
+          return;
+        }
+        player.currentTime = first.seg.start_seconds;
         player.play();
-        const timer = setInterval(() => {
-          if (player.currentTime >= e) {
-            player.pause();
-            clearInterval(timer);
-          }
-        }, 100);
-      });
 
-      document.getElementById("exportBtn").addEventListener("click", async () => {
-        const start = Number(startRange.value || 0);
-        const end = Number(endRange.value || 0);
+        state.previewTimer = setInterval(() => {
+          const cur = parseNum(player.currentTime, 0);
+          const n = nextEnabledSegmentFrom(cur);
+          if (!n) {
+            player.pause();
+            clearInterval(state.previewTimer);
+            state.previewTimer = null;
+            return;
+          }
+          if (cur >= n.seg.end_seconds - 0.03) {
+            const next = n.segments[n.idx + 1];
+            if (next) {
+              player.currentTime = next.start_seconds;
+            } else {
+              player.pause();
+              clearInterval(state.previewTimer);
+              state.previewTimer = null;
+            }
+          }
+        }, 60);
+      }
+
+      async function exportManual() {
+        if (!videoId || !token) {
+          setStatus("Sessao invalida para exportar.", true);
+          return;
+        }
+
+        const segments = buildSegments();
+        const enabledCount = segments.filter((s) => s.enabled).length;
+        if (enabledCount === 0) {
+          setStatus("Ative pelo menos um segmento para exportar.", true);
+          return;
+        }
+        if (state.captionMode === "manual" && state.manualCaptions.length === 0) {
+          setStatus("Adicione pelo menos uma legenda manual ou troque para legenda auto.", true);
+          return;
+        }
+
+        const payload = {
+          token,
+          start_seconds: state.trimStart,
+          end_seconds: state.trimEnd,
+          include_subtitles: state.captionMode !== "none",
+          caption_mode: state.captionMode,
+          subtitles_language: "pt-BR",
+          segments,
+          manual_captions: state.manualCaptions,
+        };
+
         setStatus("Enviando exportacao manual...");
-        postNative({ type: "manual_export_started", videoId, start, end });
+        postNative({ type: "manual_export_started", videoId, payload: { captionMode: state.captionMode, segments: segments.length } });
+
         const response = await fetch(`${apiBase}/v1/videos/${videoId}/manual-export`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            token,
-            start_seconds: start,
-            end_seconds: end,
-            include_subtitles: subtitleToggle.checked,
-          }),
+          body: JSON.stringify(payload),
         });
-        const data = await response.json();
+
+        let data = {};
+        try {
+          data = await response.json();
+        } catch {
+          data = {};
+        }
+
         if (!response.ok) {
-          setStatus(data.detail || "Falha na exportacao manual.");
-          postNative({ type: "manual_export_failed", videoId, error: data.detail || "manual_export_failed" });
+          const detail = data?.detail || "Falha na exportacao manual.";
+          setStatus(detail, true);
+          postNative({ type: "manual_export_failed", videoId, error: detail });
           return;
         }
+
         const newVideoId = data?.video?.id || "";
         setStatus(`Exportacao iniciada: ${newVideoId}`);
         postNative({ type: "manual_export_queued", baseVideoId: videoId, videoId: newVideoId });
+      }
+
+      async function loadVideo() {
+        if (!videoId || !token) {
+          setStatus("Sessao invalida.", true);
+          return;
+        }
+        player.src = `${apiBase}/v1/videos/${videoId}/content`;
+
+        const metaResp = await fetch(`${apiBase}/v1/videos/${videoId}`);
+        const meta = await metaResp.json();
+        if (!metaResp.ok) {
+          setStatus(meta.detail || "Falha ao carregar metadados do video.", true);
+          return;
+        }
+        setStatus(`Video base pronto (${meta.status}). Ajuste e exporte.`);
+      }
+
+      document.getElementById("backBtn").addEventListener("click", () => {
+        history.back();
+      });
+      document.getElementById("playBtn").addEventListener("click", () => {
+        if (player.paused) {
+          player.play();
+        } else {
+          player.pause();
+        }
+      });
+      document.getElementById("jumpStartBtn").addEventListener("click", () => {
+        player.currentTime = state.trimStart;
+      });
+      document.getElementById("prevSegBtn").addEventListener("click", () => {
+        const segments = buildSegments();
+        const cur = parseNum(player.currentTime, 0);
+        for (let i = segments.length - 1; i >= 0; i -= 1) {
+          if (segments[i].start_seconds < cur - 0.05) {
+            player.currentTime = segments[i].start_seconds;
+            break;
+          }
+        }
+      });
+      document.getElementById("nextSegBtn").addEventListener("click", () => {
+        const segments = buildSegments();
+        const cur = parseNum(player.currentTime, 0);
+        for (let i = 0; i < segments.length; i += 1) {
+          if (segments[i].start_seconds > cur + 0.05) {
+            player.currentTime = segments[i].start_seconds;
+            break;
+          }
+        }
+      });
+
+      function addSplitAtCurrent() {
+        const t = parseNum(player.currentTime, 0);
+        if (t <= state.trimStart + 0.05 || t >= state.trimEnd - 0.05) {
+          setStatus("Divisao precisa ficar dentro da janela de corte.", true);
+          return;
+        }
+        state.splitPoints.push(t);
+        state.splitPoints = state.splitPoints
+          .sort((a, b) => a - b)
+          .filter((v, i, arr) => i === 0 || Math.abs(v - arr[i - 1]) >= 0.04);
+        renderSplits();
+        renderSegments();
+        setStatus(`Divisao adicionada em ${fmt(t)}.`);
+      }
+
+      document.getElementById("addSplitBtn").addEventListener("click", addSplitAtCurrent);
+      document.getElementById("addSplitQuickBtn").addEventListener("click", addSplitAtCurrent);
+      document.getElementById("clearSplitsBtn").addEventListener("click", () => {
+        state.splitPoints = [];
+        renderSplits();
+        renderSegments();
+      });
+
+      document.getElementById("applyTrimBtn").addEventListener("click", () => {
+        clampTrim();
+        state.splitPoints = state.splitPoints.filter((p) => p > state.trimStart && p < state.trimEnd);
+        state.segmentEnabled = [];
+        renderSplits();
+        renderSegments();
+        player.currentTime = state.trimStart;
+        setStatus("Corte base atualizado.");
+      });
+      document.getElementById("resetTrimBtn").addEventListener("click", () => {
+        state.trimStart = 0;
+        state.trimEnd = state.duration;
+        trimStartInput.value = "0";
+        trimEndInput.value = String(state.duration.toFixed(2));
+        state.splitPoints = [];
+        state.segmentEnabled = [];
+        renderSplits();
+        renderSegments();
+      });
+
+      document.getElementById("setCaptionFromPlayheadBtn").addEventListener("click", () => {
+        const cur = parseNum(player.currentTime, 0);
+        captionStartInput.value = String(cur.toFixed(2));
+        captionEndInput.value = String(Math.min(state.duration, cur + 1.6).toFixed(2));
+      });
+      document.getElementById("addCaptionBtn").addEventListener("click", () => {
+        const st = Math.max(0, parseNum(captionStartInput.value, 0));
+        const en = Math.min(state.duration, parseNum(captionEndInput.value, st + 1.6));
+        const text = String(captionTextInput.value || "").trim();
+        if (!text) {
+          setStatus("Digite o texto da legenda manual.", true);
+          return;
+        }
+        if (en <= st + 0.05) {
+          setStatus("Fim da legenda precisa ser maior que inicio.", true);
+          return;
+        }
+        state.manualCaptions.push({ start_seconds: st, end_seconds: en, text });
+        state.manualCaptions.sort((a, b) => a.start_seconds - b.start_seconds);
+        captionTextInput.value = "";
+        renderCaptions();
+      });
+
+      document.getElementById("previewBtn").addEventListener("click", previewEdited);
+      document.getElementById("exportBtnBottom").addEventListener("click", exportManual);
+      document.getElementById("exportBtnTop").addEventListener("click", exportManual);
+
+      seekRange.addEventListener("input", () => {
+        player.currentTime = parseNum(seekRange.value, 0);
+      });
+      player.addEventListener("timeupdate", updateTimeUi);
+      player.addEventListener("loadedmetadata", () => {
+        state.duration = parseNum(player.duration, 0);
+        state.trimStart = 0;
+        state.trimEnd = state.duration;
+        trimStartInput.value = "0";
+        trimEndInput.value = String(state.duration.toFixed(2));
+        seekRange.max = String(state.duration);
+        totalTimeEl.textContent = fmt(state.duration);
+        recalcRuler();
+        renderSplits();
+        renderSegments();
+        renderCaptions();
+      });
+
+      document.querySelectorAll(".menu-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".menu-btn").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          const tab = btn.getAttribute("data-tab");
+          ["cut", "split", "text"].forEach((id) => {
+            document.getElementById(`panel-${id}`).classList.toggle("active", id === tab);
+          });
+        });
+      });
+
+      document.querySelectorAll(".mode-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const mode = btn.getAttribute("data-caption-mode");
+          state.captionMode = mode;
+          document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          manualCaptionWrap.style.display = mode === "manual" ? "block" : "none";
+        });
       });
 
       loadVideo();
-      updateLabels();
+      renderSplits();
+      renderSegments();
+      renderCaptions();
     </script>
   </body>
 </html>
