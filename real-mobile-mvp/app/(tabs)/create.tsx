@@ -6,7 +6,7 @@ import { Screen } from "../../src/ui/components/Screen";
 import { Body } from "../../src/ui/components/Typography";
 
 const serviceCards: Array<{
-  id: "ads" | "site" | "video_editor";
+  id: string;
   title: string;
   hint: string;
   route: string;
@@ -30,10 +30,18 @@ const serviceCards: Array<{
   },
   {
     id: "video_editor",
-    title: "Vídeo curto\nque chama atenção",
-    hint: "Pronto para reels e anúncios",
+    title: "Editar com IA\nem um clique",
+    hint: "Enviar video + corte + legenda",
     route: "/create/video-editor",
     image: require("../../assets/services/video-camera.png"),
+  },
+  {
+    id: "video_editor_manual",
+    title: "Editor manual\nseparado",
+    hint: "Ajustar corte final em outra tela",
+    route: "/create/video-editor-manual-hub",
+    image: require("../../assets/services/video-camera.png"),
+    ctaRight: true,
   },
 ];
 

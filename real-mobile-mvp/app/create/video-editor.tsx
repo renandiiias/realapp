@@ -1,4 +1,3 @@
-import { router, useLocalSearchParams } from "expo-router";
 import { ResizeMode, Video } from "expo-av";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
@@ -8,7 +7,6 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, View } from "react-native";
 import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
 import {
-  createManualEditorSession,
   fetchVideo,
   getDownloadUrl,
   submitVideoEditJob,
@@ -86,9 +84,6 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 }
 
 export default function VideoEditorCreateScreen() {
-  const params = useLocalSearchParams<{ orderId?: string | string[] }>();
-  const orderId = Array.isArray(params.orderId) ? params.orderId[0] : params.orderId;
-
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
   const [stylePrompt, setStylePrompt] = useState("");
@@ -99,7 +94,6 @@ export default function VideoEditorCreateScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
-  const [openingManual, setOpeningManual] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const videoApiBase = useMemo(() => {
@@ -223,27 +217,6 @@ export default function VideoEditorCreateScreen() {
     }
   };
 
-  const recordVideoNow = async () => {
-    setError(null);
-    try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        setError("Permissao de camera negada.");
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        videoMaxDuration: MAX_VIDEO_SECONDS,
-        quality: 1,
-      });
-      if (result.canceled || !result.assets?.[0]) return;
-      applyPicked(result.assets[0], "camera");
-    } catch (cameraError) {
-      setError(pickerErrorMessage(cameraError));
-    }
-  };
-
   const submit = async () => {
     if (!picked || submitting) return;
     if (!hasRemoteEditor || !videoApiBase) {
@@ -333,28 +306,6 @@ export default function VideoEditorCreateScreen() {
     }
   };
 
-  const openManualEditor = async () => {
-    if (!video || !videoApiBase || video.status !== "COMPLETE") return;
-    setOpeningManual(true);
-    setError(null);
-    try {
-      const session = await createManualEditorSession(videoApiBase, video.id, orderId);
-      router.push({
-        pathname: "/create/video-editor-manual",
-        params: {
-          editorUrl: session.editorUrl,
-          baseVideoId: video.id,
-          apiBase: videoApiBase,
-        },
-      });
-    } catch (manualError) {
-      const message = manualError instanceof Error ? manualError.message : "Nao foi possivel abrir o editor manual.";
-      setError(humanizeVideoError(message));
-    } finally {
-      setOpeningManual(false);
-    }
-  };
-
   const downloadInsideApp = async () => {
     const url = resolveVideoUrl();
     if (!url) return;
@@ -403,15 +354,7 @@ export default function VideoEditorCreateScreen() {
         <Card>
           <SubTitle>Escolha o video</SubTitle>
           <View style={styles.actions}>
-            <Button label="Enviar da galeria" onPress={() => runSafe(pickVideoFromLibrary)} style={styles.action} disabled={submitting} />
-            <Button label="Gravar agora" onPress={() => runSafe(recordVideoNow)} variant="secondary" style={styles.action} disabled={submitting} />
-            <Button
-              label="Escolher arquivo (fallback)"
-              onPress={() => runSafe(pickVideoWithDocumentPicker)}
-              variant="secondary"
-              style={styles.action}
-              disabled={submitting}
-            />
+            <Button label="Enviar video" onPress={() => runSafe(pickVideoFromLibrary)} style={styles.action} disabled={submitting} />
           </View>
           {picked ? (
             <View style={styles.pickedMeta}>
@@ -462,14 +405,6 @@ export default function VideoEditorCreateScreen() {
                 disabled={Boolean(downloadingUrl)}
                 style={styles.downloadButton}
               />
-              {manualEnabled ? (
-                <Button
-                  label={openingManual ? "Abrindo editor..." : "Editar manualmente"}
-                  onPress={() => void openManualEditor()}
-                  disabled={openingManual}
-                  style={styles.downloadButton}
-                />
-              ) : null}
               <Button
                 label={refreshing ? "Atualizando..." : "Atualizar status"}
                 onPress={() => void refreshStatus()}
@@ -477,6 +412,7 @@ export default function VideoEditorCreateScreen() {
                 variant="secondary"
                 style={styles.downloadButton}
               />
+              {manualEnabled ? <Body style={styles.hint}>Para ajuste manual: Criar -> Editor manual separado.</Body> : null}
             </View>
           ) : null}
         </Card>
