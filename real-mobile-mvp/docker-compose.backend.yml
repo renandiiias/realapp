@@ -49,6 +49,23 @@ services:
     ports:
       - "3340:3340"
 
+  video-editor-api:
+    build:
+      context: ./video-editor-api
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8081
+    env_file:
+      - ./video-editor-api/.env.example
+    environment:
+      - PUBLIC_BASE_URL=http://video-editor-api:8081
+      - VIDEO_STORAGE_ROOT=/app/storage
+      - VIDEO_DB_PATH=/app/storage/video_editor.db
+      - VIDEO_EDITOR_MANUAL_ENABLED=true
+    volumes:
+      - ./video-editor-api/storage:/app/storage
+      - ./video-editor-api/editor:/app/editor
+    ports:
+      - "8081:8081"
+
   codex-worker:
     build:
       context: ./codex-worker
@@ -57,9 +74,12 @@ services:
       - ./codex-worker/.env
     environment:
       - SITE_BUILDER_API_BASE_URL=http://site-builder-api:3340
+      - VIDEO_EDITOR_API_BASE_URL=http://video-editor-api:8081
+      - VIDEO_EDITOR_PUBLIC_BASE_URL=http://video-editor-api:8081
     depends_on:
       - queue-api
       - site-builder-api
+      - video-editor-api
 
 volumes:
   real_postgres_data:

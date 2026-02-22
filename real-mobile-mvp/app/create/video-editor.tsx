@@ -1,3 +1,4 @@
+import { router, useLocalSearchParams } from "expo-router";
 import { ResizeMode, Video } from "expo-av";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
@@ -6,7 +7,14 @@ import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, View } from "react-native";
 import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
-import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
+import {
+  createManualEditorSession,
+  fetchVideo,
+  getDownloadUrl,
+  submitVideoEditJob,
+  type AiEditMode,
+  type VideoItem,
+} from "../../src/services/videoEditorApi";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -78,6 +86,9 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 }
 
 export default function VideoEditorCreateScreen() {
+  const params = useLocalSearchParams<{ orderId?: string | string[] }>();
+  const orderId = Array.isArray(params.orderId) ? params.orderId[0] : params.orderId;
+
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
   const [stylePrompt, setStylePrompt] = useState("");
@@ -88,12 +99,15 @@ export default function VideoEditorCreateScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [openingManual, setOpeningManual] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const videoApiBase = useMemo(() => {
     const raw = process.env.EXPO_PUBLIC_VIDEO_EDITOR_API_BASE_URL?.trim() ?? "";
     return raw ? raw.replace(/\/+$/, "") : "";
   }, []);
   const hasRemoteEditor = Boolean(videoApiBase);
+  const manualEnabled = String(process.env.EXPO_PUBLIC_VIDEO_EDITOR_MANUAL_ENABLED || "true").toLowerCase() === "true";
 
   useEffect(() => {
     if (!hasRemoteEditor || !video || !videoApiBase) return;
@@ -305,6 +319,42 @@ export default function VideoEditorCreateScreen() {
     }
   };
 
+  const refreshStatus = async () => {
+    if (!video || !videoApiBase) return;
+    setRefreshing(true);
+    try {
+      const current = await fetchVideo(videoApiBase, video.id);
+      setVideo(current);
+    } catch (refreshError) {
+      const message = refreshError instanceof Error ? refreshError.message : "Nao foi possivel atualizar o status.";
+      setError(humanizeVideoError(message));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const openManualEditor = async () => {
+    if (!video || !videoApiBase || video.status !== "COMPLETE") return;
+    setOpeningManual(true);
+    setError(null);
+    try {
+      const session = await createManualEditorSession(videoApiBase, video.id, orderId);
+      router.push({
+        pathname: "/create/video-editor-manual",
+        params: {
+          editorUrl: session.editorUrl,
+          baseVideoId: video.id,
+          apiBase: videoApiBase,
+        },
+      });
+    } catch (manualError) {
+      const message = manualError instanceof Error ? manualError.message : "Nao foi possivel abrir o editor manual.";
+      setError(humanizeVideoError(message));
+    } finally {
+      setOpeningManual(false);
+    }
+  };
+
   const downloadInsideApp = async () => {
     const url = resolveVideoUrl();
     if (!url) return;
@@ -412,6 +462,21 @@ export default function VideoEditorCreateScreen() {
                 disabled={Boolean(downloadingUrl)}
                 style={styles.downloadButton}
               />
+              {manualEnabled ? (
+                <Button
+                  label={openingManual ? "Abrindo editor..." : "Editar manualmente"}
+                  onPress={() => void openManualEditor()}
+                  disabled={openingManual}
+                  style={styles.downloadButton}
+                />
+              ) : null}
+              <Button
+                label={refreshing ? "Atualizando..." : "Atualizar status"}
+                onPress={() => void refreshStatus()}
+                disabled={refreshing}
+                variant="secondary"
+                style={styles.downloadButton}
+              />
             </View>
           ) : null}
         </Card>
@@ -432,9 +497,7 @@ export default function VideoEditorCreateScreen() {
 
       <Modal visible={Boolean(viewerUrl)} animationType="slide" transparent={false} onRequestClose={() => setViewerUrl(null)}>
         <View style={styles.viewerWrap}>
-          {viewerUrl ? (
-            <Video source={{ uri: viewerUrl }} style={styles.viewerPlayer} useNativeControls resizeMode={ResizeMode.CONTAIN} isLooping={false} />
-          ) : null}
+          {viewerUrl ? <Video source={{ uri: viewerUrl }} style={styles.viewerPlayer} useNativeControls resizeMode={ResizeMode.CONTAIN} isLooping={false} /> : null}
           <View style={styles.viewerActions}>
             {downloadingUrl === viewerUrl ? <ActivityIndicator color={realTheme.colors.green} /> : null}
             <Button

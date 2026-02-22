@@ -52,9 +52,19 @@ export function buildVideoDeliverableSummary(content: unknown): string {
     durationSeconds?: unknown;
     subtitles?: { status?: unknown; enabled?: unknown } | unknown;
     stylePrompt?: unknown;
+    manualEdited?: unknown;
+    baseVideoId?: unknown;
   };
 
   const lines: string[] = ["Video final processado para redes sociais."];
+
+  if (payload.manualEdited === true) {
+    lines.push("Versao ajustada manualmente pelo cliente.");
+  }
+
+  if (typeof payload.baseVideoId === "string" && payload.baseVideoId.trim()) {
+    lines.push("Baseado em uma versao anterior do video.");
+  }
 
   const durationRaw =
     typeof payload.clipDurationSeconds === "number"

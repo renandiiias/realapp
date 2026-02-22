@@ -28,6 +28,13 @@ export type CaptionTemplate = {
   created_at: string;
 };
 
+export type ManualEditorSession = {
+  editorUrl: string;
+  sessionToken: string;
+  expiresAt: string;
+  editSessionId: string;
+};
+
 type TemplateListResponse = {
   object: "list";
   data: CaptionTemplate[];
@@ -41,6 +48,8 @@ async function extractErrorMessage(response: Response): Promise<string> {
       message = payload.detail;
     } else if (payload?.detail?.message) {
       message = payload.detail.message;
+    } else if (typeof payload?.error === "string") {
+      message = payload.error;
     }
   } catch {
     // noop
@@ -130,7 +139,6 @@ export async function submitVideoEditJob(params: {
     return { video: created, compatibilityMode: false };
   }
 
-  // Backward compatibility: old servers only expose /captions.
   if (editsResponse.status !== 404 && editsResponse.status !== 405) {
     throw new Error(await extractErrorMessage(editsResponse));
   }
@@ -160,6 +168,16 @@ export async function fetchVideo(baseUrl: string, videoId: string): Promise<Vide
   const safeBase = cleanBaseUrl(baseUrl);
   const response = await fetch(`${safeBase}/v1/videos/${videoId}`);
   return parseResponse<VideoItem>(response);
+}
+
+export async function createManualEditorSession(baseUrl: string, videoId: string, orderId?: string): Promise<ManualEditorSession> {
+  const safeBase = cleanBaseUrl(baseUrl);
+  const response = await fetch(`${safeBase}/v1/videos/${videoId}/editor-session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ order_id: orderId || null }),
+  });
+  return parseResponse<ManualEditorSession>(response);
 }
 
 export function getDownloadUrl(baseUrl: string, videoId: string): string {
