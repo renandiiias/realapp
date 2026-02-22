@@ -116,6 +116,7 @@ export default function VideoEditorManualScreen() {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
 
   const [loadingSource, setLoadingSource] = useState(false);
+  const [pickingVideo, setPickingVideo] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState("Envie um video para abrir o editor manual.");
   const [error, setError] = useState<string | null>(null);
@@ -306,6 +307,35 @@ export default function VideoEditorManualScreen() {
       await prepareManualEditor(normalized);
       return true;
     } catch (pickError) {
+      const raw = pickError instanceof Error ? pickError.message : String(pickError ?? "");
+      if (/Different document picking in progress/i.test(raw)) {
+        await new Promise((r) => setTimeout(r, 700));
+        try {
+          const retry = await DocumentPicker.getDocumentAsync({
+            type: "video/*",
+            multiple: false,
+            copyToCacheDirectory: true,
+          });
+          if (!retry.canceled && retry.assets?.[0]) {
+            const normalizedRetry = applyPicked(
+              {
+                uri: retry.assets[0].uri,
+                fileName: retry.assets[0].name,
+                mimeType: retry.assets[0].mimeType,
+                fileSize: retry.assets[0].size,
+              },
+              flowTraceId,
+            );
+            if (normalizedRetry) {
+              setPicked(normalizedRetry);
+              await prepareManualEditor(normalizedRetry);
+              return true;
+            }
+          }
+        } catch {
+          // noop
+        }
+      }
       setError(pickerErrorMessage(pickError));
       void sendVideoClientLog({
         baseUrl: videoApiBase,
@@ -313,14 +343,17 @@ export default function VideoEditorManualScreen() {
         stage: "picker",
         event: "document_picker_failed",
         level: "error",
-        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+        meta: { raw_error: raw },
       });
       return false;
     }
   };
 
   const pickVideoSmart = async () => {
+    if (pickingVideo || loadingSource) return;
+    setPickingVideo(true);
     setError(null);
+    setStatus("Abrindo galeria...");
     const nextTraceId = makeClientTraceId("manual");
     setFlowTraceId(nextTraceId);
     try {
@@ -349,14 +382,31 @@ export default function VideoEditorManualScreen() {
         stage: "picker",
         event: "image_library_open_start",
       });
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["videos"],
-        quality: 1,
-        allowsEditing: false,
-        allowsMultipleSelection: false,
-        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-      });
+      let result: ImagePicker.ImagePickerResult;
+      try {
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ["videos"],
+          quality: 1,
+          allowsEditing: false,
+          allowsMultipleSelection: false,
+          preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+          videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+        });
+      } catch (modernPickerError) {
+        void sendVideoClientLog({
+          baseUrl: videoApiBase,
+          traceId: nextTraceId,
+          stage: "picker",
+          event: "image_library_modern_api_failed_try_legacy",
+          level: "warn",
+          meta: { raw_error: modernPickerError instanceof Error ? modernPickerError.message : String(modernPickerError ?? "") },
+        });
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: (ImagePicker as any).MediaTypeOptions?.Videos ?? (ImagePicker as any).MediaTypeOptions?.All,
+          quality: 1,
+          allowsEditing: false,
+        } as any);
+      }
       if (result.canceled || !result.assets?.[0]) {
         void sendVideoClientLog({
           baseUrl: videoApiBase,
@@ -387,8 +437,11 @@ export default function VideoEditorManualScreen() {
         level: "warn",
         meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
       });
+      await new Promise((r) => setTimeout(r, 700));
       const fallbackOk = await pickVideoWithDocumentPicker();
       if (!fallbackOk) setError(pickerErrorMessage(pickError));
+    } finally {
+      setPickingVideo(false);
     }
   };
 
@@ -629,8 +682,8 @@ export default function VideoEditorManualScreen() {
               <Text style={styles.cardSubtitle}>Sem tela intermediaria. Um unico fluxo direto para editar manualmente.</Text>
 
               <TouchableOpacity style={styles.greenButton} activeOpacity={0.92} onPress={() => void pickVideoSmart()} disabled={loadingSource}>
-                {loadingSource ? <ActivityIndicator color="#102808" /> : <Ionicons name="play-circle" size={24} color="#102808" />}
-                <Text style={styles.greenButtonText}>{loadingSource ? "Preparando..." : "Enviar da galeria"}</Text>
+                {loadingSource || pickingVideo ? <ActivityIndicator color="#102808" /> : <Ionicons name="play-circle" size={24} color="#102808" />}
+                <Text style={styles.greenButtonText}>{loadingSource ? "Preparando..." : pickingVideo ? "Abrindo galeria..." : "Enviar da galeria"}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.secondaryButton} activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()} disabled={loadingSource}>

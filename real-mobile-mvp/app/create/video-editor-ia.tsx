@@ -76,6 +76,7 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 
 export default function VideoEditorIaScreen() {
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("ia"));
+  const [pickingVideo, setPickingVideo] = useState(false);
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
 
@@ -189,6 +190,32 @@ export default function VideoEditorIaScreen() {
       );
       return true;
     } catch (pickError) {
+      const raw = pickError instanceof Error ? pickError.message : String(pickError ?? "");
+      if (/Different document picking in progress/i.test(raw)) {
+        await new Promise((r) => setTimeout(r, 700));
+        try {
+          const retry = await DocumentPicker.getDocumentAsync({
+            type: "video/*",
+            multiple: false,
+            copyToCacheDirectory: true,
+          });
+          if (!retry.canceled && retry.assets?.[0]) {
+            const file = retry.assets[0];
+            applyPicked(
+              {
+                uri: file.uri,
+                fileName: file.name,
+                mimeType: file.mimeType,
+                fileSize: file.size,
+              },
+              flowTraceId,
+            );
+            return true;
+          }
+        } catch {
+          // noop
+        }
+      }
       setError(pickerErrorMessage(pickError));
       void sendVideoClientLog({
         baseUrl: videoApiBase,
@@ -196,13 +223,15 @@ export default function VideoEditorIaScreen() {
         stage: "picker",
         event: "document_picker_failed",
         level: "error",
-        meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
+        meta: { raw_error: raw },
       });
       return false;
     }
   };
 
   const pickVideoFromLibrary = async () => {
+    if (pickingVideo || submitting) return;
+    setPickingVideo(true);
     setError(null);
     const nextTraceId = makeClientTraceId("ia");
     setFlowTraceId(nextTraceId);
@@ -270,6 +299,7 @@ export default function VideoEditorIaScreen() {
         level: "warn",
         meta: { raw_error: pickError instanceof Error ? pickError.message : String(pickError ?? "") },
       });
+      await new Promise((r) => setTimeout(r, 700));
       const fallbackOk = await pickVideoWithDocumentPicker();
       if (fallbackOk) return;
       if (isIosPhotos3164(pickError)) {
@@ -277,6 +307,8 @@ export default function VideoEditorIaScreen() {
         return;
       }
       setError(pickerErrorMessage(pickError));
+    } finally {
+      setPickingVideo(false);
     }
   };
 
@@ -441,9 +473,9 @@ export default function VideoEditorIaScreen() {
 
           <View style={styles.block}>
             <Text style={styles.blockTitle}>Escolha o video</Text>
-            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting}>
-              <Ionicons name="play-circle" size={23} color="#0c2106" />
-              <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : "Enviar video"}</Text>
+            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoSmart()} disabled={submitting || pickingVideo}>
+              {pickingVideo ? <ActivityIndicator color="#0c2106" /> : <Ionicons name="play-circle" size={23} color="#0c2106" />}
+              <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : pickingVideo ? "Abrindo galeria..." : "Enviar video"}</Text>
             </TouchableOpacity>
             {picked ? (
               <Text style={styles.meta}>Arquivo: {picked.name} · {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(1)}s` : "duracao nao detectada"}</Text>
