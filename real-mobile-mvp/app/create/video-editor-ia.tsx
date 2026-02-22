@@ -1,25 +1,26 @@
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { ResizeMode, Video } from "expo-av";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, View } from "react-native";
-import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
 import {
-  fetchVideo,
-  getDownloadUrl,
-  submitVideoEditJob,
-  type AiEditMode,
-  type VideoItem,
-} from "../../src/services/videoEditorApi";
+  ActivityIndicator,
+  Alert,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { humanizeVideoError, mapVideoStatusToClientLabel } from "../../src/services/videoEditorPresenter";
+import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
 import { realTheme } from "../../src/theme/realTheme";
-import { Button } from "../../src/ui/components/Button";
-import { Card } from "../../src/ui/components/Card";
-import { Chip } from "../../src/ui/components/Chip";
-import { Field } from "../../src/ui/components/Field";
 import { Screen } from "../../src/ui/components/Screen";
-import { Body, Kicker, SubTitle, Title } from "../../src/ui/components/Typography";
 
 const MAX_VIDEO_SECONDS = 300;
 const ACCEPTED_EXTENSIONS = [".mp4", ".mov"];
@@ -29,10 +30,7 @@ type PickedVideo = {
   name: string;
   mimeType: string;
   durationSeconds: number;
-  source: "gallery" | "camera";
   sizeBytes?: number;
-  width?: number;
-  height?: number;
 };
 
 function normalizeDuration(rawDuration: number | null | undefined): number {
@@ -65,13 +63,6 @@ function hasAcceptedExtension(name: string): boolean {
   return ACCEPTED_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
-function modeDescription(mode: AiEditMode): string {
-  if (mode === "cut") {
-    return "A IA remove pausas e entrega um video curto e objetivo.";
-  }
-  return "A IA faz os cortes e aplica legenda automatica em portugues.";
-}
-
 function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver" | "done" | "failed" {
   if (!video) return "prepare";
   if (video.status === "QUEUED") return "prepare";
@@ -83,25 +74,22 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
   return "failed";
 }
 
-export default function VideoEditorCreateScreen() {
+export default function VideoEditorIaScreen() {
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
   const [stylePrompt, setStylePrompt] = useState("");
 
   const [video, setVideo] = useState<VideoItem | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [compatibilityNotice, setCompatibilityNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   const videoApiBase = useMemo(() => {
     const raw = process.env.EXPO_PUBLIC_VIDEO_EDITOR_API_BASE_URL?.trim() ?? "";
     return raw ? raw.replace(/\/+$/, "") : "";
   }, []);
   const hasRemoteEditor = Boolean(videoApiBase);
-  const manualEnabled = String(process.env.EXPO_PUBLIC_VIDEO_EDITOR_MANUAL_ENABLED || "true").toLowerCase() === "true";
 
   useEffect(() => {
     if (!hasRemoteEditor || !video || !videoApiBase) return;
@@ -109,9 +97,7 @@ export default function VideoEditorCreateScreen() {
 
     const timer = setInterval(() => {
       void fetchVideo(videoApiBase, video.id)
-        .then((current) => {
-          setVideo(current);
-        })
+        .then((current) => setVideo(current))
         .catch((refreshError) => {
           const message = refreshError instanceof Error ? refreshError.message : "Nao foi possivel atualizar o status.";
           setError(humanizeVideoError(message));
@@ -121,25 +107,7 @@ export default function VideoEditorCreateScreen() {
     return () => clearInterval(timer);
   }, [hasRemoteEditor, video, videoApiBase]);
 
-  const canSubmit = Boolean(picked) && !submitting && hasRemoteEditor;
-  const runSafe = (task: () => Promise<void>) => {
-    void task().catch((taskError) => {
-      setError(pickerErrorMessage(taskError));
-    });
-  };
-
-  const applyPicked = (
-    asset: {
-      uri: string;
-      fileName?: string | null;
-      mimeType?: string | null;
-      duration?: number | null;
-      fileSize?: number | null;
-      width?: number;
-      height?: number;
-    },
-    source: "gallery" | "camera",
-  ) => {
+  const applyPicked = (asset: { uri: string; fileName?: string | null; mimeType?: string | null; duration?: number | null; fileSize?: number | null }) => {
     const durationSeconds = normalizeDuration(asset.duration);
     if (durationSeconds && durationSeconds > MAX_VIDEO_SECONDS) {
       setError("Use um video de ate 5 minutos.");
@@ -152,21 +120,14 @@ export default function VideoEditorCreateScreen() {
       return;
     }
 
-    const guessedType = asset.mimeType || "video/mp4";
-    const fileSize = typeof asset.fileSize === "number" ? asset.fileSize : undefined;
-
     setPicked({
       uri: asset.uri,
       name: guessedName,
-      mimeType: guessedType,
+      mimeType: asset.mimeType || "video/mp4",
       durationSeconds,
-      source,
-      sizeBytes: fileSize,
-      width: asset.width,
-      height: asset.height,
+      sizeBytes: typeof asset.fileSize === "number" ? asset.fileSize : undefined,
     });
     setVideo(null);
-    setCompatibilityNotice(null);
     setError(null);
   };
 
@@ -179,15 +140,12 @@ export default function VideoEditorCreateScreen() {
       });
       if (result.canceled || !result.assets?.[0]) return;
       const file = result.assets[0];
-      applyPicked(
-        {
-          uri: file.uri,
-          fileName: file.name,
-          mimeType: file.mimeType,
-          fileSize: file.size,
-        },
-        "gallery",
-      );
+      applyPicked({
+        uri: file.uri,
+        fileName: file.name,
+        mimeType: file.mimeType,
+        fileSize: file.size,
+      });
     } catch (pickError) {
       setError(pickerErrorMessage(pickError));
     }
@@ -207,7 +165,7 @@ export default function VideoEditorCreateScreen() {
         quality: 1,
       });
       if (result.canceled || !result.assets?.[0]) return;
-      applyPicked(result.assets[0], "gallery");
+      applyPicked(result.assets[0]);
     } catch (pickError) {
       if (isIosPhotos3164(pickError)) {
         await pickVideoWithDocumentPicker();
@@ -218,16 +176,9 @@ export default function VideoEditorCreateScreen() {
   };
 
   const submit = async () => {
-    if (!picked || submitting) return;
-    if (!hasRemoteEditor || !videoApiBase) {
-      setError("Editor de video indisponivel neste ambiente agora.");
-      return;
-    }
-
+    if (!picked || submitting || !videoApiBase) return;
     setSubmitting(true);
     setError(null);
-    setCompatibilityNotice(null);
-
     try {
       const created = await submitVideoEditJob({
         baseUrl: videoApiBase,
@@ -240,13 +191,6 @@ export default function VideoEditorCreateScreen() {
         instructions: stylePrompt,
       });
       setVideo(created.video);
-      if (created.compatibilityMode) {
-        setCompatibilityNotice(
-          aiMode === "cut"
-            ? "Modo aplicado com compatibilidade do servidor. Neste ambiente, o resultado pode incluir legenda."
-            : "Modo aplicado com compatibilidade do servidor.",
-        );
-      }
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Nao foi possivel iniciar a edicao.";
       setError(humanizeVideoError(message));
@@ -268,12 +212,6 @@ export default function VideoEditorCreateScreen() {
     throw new Error(`Arquivo indisponivel no servidor (HTTP ${head.status}).`);
   };
 
-  const buildFileName = (url: string) => {
-    const match = url.match(/\/([^/?#]+\.mp4)(?:[?#]|$)/i);
-    if (match?.[1]) return match[1];
-    return `video_${Date.now()}.mp4`;
-  };
-
   const resolveVideoUrl = () => {
     if (!videoApiBase || !video || video.status !== "COMPLETE") return null;
     return getDownloadUrl(videoApiBase, video.id);
@@ -292,18 +230,10 @@ export default function VideoEditorCreateScreen() {
     }
   };
 
-  const refreshStatus = async () => {
-    if (!video || !videoApiBase) return;
-    setRefreshing(true);
-    try {
-      const current = await fetchVideo(videoApiBase, video.id);
-      setVideo(current);
-    } catch (refreshError) {
-      const message = refreshError instanceof Error ? refreshError.message : "Nao foi possivel atualizar o status.";
-      setError(humanizeVideoError(message));
-    } finally {
-      setRefreshing(false);
-    }
+  const buildFileName = (url: string) => {
+    const match = url.match(/\/([^/?#]+\.mp4)(?:[?#]|$)/i);
+    if (match?.[1]) return match[1];
+    return `video_${Date.now()}.mp4`;
   };
 
   const downloadInsideApp = async () => {
@@ -342,107 +272,109 @@ export default function VideoEditorCreateScreen() {
   const stage = stageFromVideo(video);
   const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
 
+  const stageColor = (key: string) => {
+    if (stage === "failed") return key === "failed" ? "#ff6f6f" : "#7f8695";
+    if (key === stage) return "#57ef2f";
+    if (key === "failed") return "#7f8695";
+    return "#9ba4b5";
+  };
+
   return (
-    <Screen>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-        <Card>
-          <Kicker>Editor de video</Kicker>
-          <Title>Edite com IA em poucos toques</Title>
-          <Body>Envie seu video e escolha como a IA deve editar.</Body>
-        </Card>
-
-        <Card>
-          <SubTitle>Escolha o video</SubTitle>
-          <View style={styles.actions}>
-            <Button label="Enviar video" onPress={() => runSafe(pickVideoFromLibrary)} style={styles.action} disabled={submitting} />
+    <Screen plain style={styles.screen}>
+      <LinearGradient colors={["#07090f", "#0a0d17", "#07090f"]} style={styles.bg}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          <View style={styles.header}>
+            <Text style={styles.title}>Edite de forma facil com IA!</Text>
+            <Text style={styles.subtitle}>Envie seu video e escolha como a IA deve edita-lo de forma rapida e automatica.</Text>
           </View>
-          {picked ? (
-            <View style={styles.pickedMeta}>
-              <Body>Arquivo: {picked.name}</Body>
-              <Body>Duracao: {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(2)}s` : "nao detectada"}</Body>
-              <Body>Origem: {picked.source === "camera" ? "Camera" : "Galeria"}</Body>
-              {picked.sizeBytes ? <Body>Tamanho: {(picked.sizeBytes / (1024 * 1024)).toFixed(1)}MB</Body> : null}
+
+          <View style={styles.block}>
+            <Text style={styles.blockTitle}>Escolha o video</Text>
+            <TouchableOpacity style={styles.greenButton} activeOpacity={0.9} onPress={() => void pickVideoFromLibrary()} disabled={submitting}>
+              <Ionicons name="play-circle" size={23} color="#0c2106" />
+              <Text style={styles.greenButtonText}>{submitting ? "Enviando..." : "Enviar video"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.9} onPress={() => void pickVideoWithDocumentPicker()}>
+              <Text style={styles.fallback}>Escolher arquivo (fallback)</Text>
+            </TouchableOpacity>
+            {picked ? (
+              <Text style={styles.meta}>Arquivo: {picked.name} · {picked.durationSeconds > 0 ? `${picked.durationSeconds.toFixed(1)}s` : "duracao nao detectada"}</Text>
+            ) : null}
+          </View>
+
+          <View style={styles.block}>
+            <Text style={styles.blockTitle}>Escolha o tipo de edicao</Text>
+            <View style={styles.modeRow}>
+              <TouchableOpacity style={[styles.modeChip, aiMode === "cut" ? styles.modeChipActive : null]} onPress={() => setAiMode("cut")}>
+                <Text style={[styles.modeChipText, aiMode === "cut" ? styles.modeChipTextActive : null]}>Corte</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeChip, aiMode === "cut_captions" ? styles.modeChipActive : null]}
+                onPress={() => setAiMode("cut_captions")}
+              >
+                <Text style={[styles.modeChipText, aiMode === "cut_captions" ? styles.modeChipTextActive : null]}>Corte + Legenda</Text>
+              </TouchableOpacity>
             </View>
-          ) : null}
-        </Card>
-
-        <Card>
-          <SubTitle>Editar com IA</SubTitle>
-          <View style={styles.modeRow}>
-            <Chip label="Corte" active={aiMode === "cut"} onPress={() => setAiMode("cut")} />
-            <Chip label="Corte + Legenda" active={aiMode === "cut_captions"} onPress={() => setAiMode("cut_captions")} />
+            <Text style={styles.help}>A IA remove pausas e adiciona legendas automaticas no video.</Text>
+            <Text style={styles.label}>Instrucao opcional de estilo</Text>
+            <TextInput
+              style={styles.input}
+              value={stylePrompt}
+              onChangeText={setStylePrompt}
+              placeholder="Ex.: estilo dinamico e direto"
+              placeholderTextColor="#70798a"
+            />
           </View>
-          <Body style={styles.hint}>{modeDescription(aiMode)}</Body>
-          <Field
-            label="Instrucao de estilo (opcional)"
-            value={stylePrompt}
-            onChangeText={setStylePrompt}
-            placeholder="Ex.: ritmo mais dinamico e foco nos pontos principais"
-            multiline
-          />
-        </Card>
 
-        <Card>
-          <SubTitle>Status da edicao</SubTitle>
-          <Body style={styles.statusMain}>{mapVideoStatusToClientLabel(video?.status, progress)}</Body>
-          {video?.status === "PROCESSING" ? <Body style={styles.hint}>{Math.max(1, Math.round(progress * 100))}% concluido</Body> : null}
-          {video?.status === "FAILED" && video.error?.message ? <Body style={styles.error}>{humanizeVideoError(video.error.message)}</Body> : null}
-          <View style={styles.timeline}>
-            <Body style={stage === "prepare" ? styles.timelineActive : styles.timelineItem}>Preparar</Body>
-            <Body style={stage === "edit" ? styles.timelineActive : styles.timelineItem}>Editar</Body>
-            <Body style={stage === "deliver" ? styles.timelineActive : styles.timelineItem}>Entregar</Body>
-            <Body style={stage === "done" ? styles.timelineActive : stage === "failed" ? styles.timelineFailed : styles.timelineItem}>
-              {stage === "failed" ? "Falha" : "Pronto"}
-            </Body>
+          <View style={styles.block}>
+            <Text style={styles.blockTitle}>Status da edicao</Text>
+            <Text style={styles.statusText}>{mapVideoStatusToClientLabel(video?.status, progress)}</Text>
+            <View style={styles.timeline}>
+              <Text style={[styles.timelineText, { color: stageColor("prepare") }]}>Preparar</Text>
+              <Text style={[styles.timelineText, { color: stageColor("edit") }]}>Editando</Text>
+              <Text style={[styles.timelineText, { color: stageColor("deliver") }]}>Entregar</Text>
+              <Text style={[styles.timelineText, { color: stageColor("done") }]}>Pronto</Text>
+            </View>
+            {video?.status === "PROCESSING" ? <Text style={styles.meta}>{Math.max(1, Math.round(progress * 100))}% concluido</Text> : null}
           </View>
-          {compatibilityNotice ? <Body style={styles.compatibility}>{compatibilityNotice}</Body> : null}
+
+          <TouchableOpacity
+            style={[styles.cta, !picked || submitting || !hasRemoteEditor ? styles.ctaDisabled : null]}
+            activeOpacity={0.9}
+            onPress={() => void submit()}
+            disabled={!picked || submitting || !hasRemoteEditor}
+          >
+            {submitting ? <ActivityIndicator color="#0e2b09" /> : <MaterialCommunityIcons name="robot-outline" size={25} color="#0e2b09" />}
+            <Text style={styles.ctaText}>{submitting ? "Iniciando..." : "Iniciar edicao com IA"}</Text>
+            <Ionicons name="chevron-forward" size={24} color="#0e2b09" />
+          </TouchableOpacity>
+
           {video?.status === "COMPLETE" ? (
             <View style={styles.completeActions}>
-              <Button label="Ver video no app" onPress={() => void openViewer()} variant="secondary" style={styles.downloadButton} />
-              <Button
-                label={downloadingUrl ? "Baixando..." : "Baixar no app"}
-                onPress={() => void downloadInsideApp()}
-                disabled={Boolean(downloadingUrl)}
-                style={styles.downloadButton}
-              />
-              <Button
-                label={refreshing ? "Atualizando..." : "Atualizar status"}
-                onPress={() => void refreshStatus()}
-                disabled={refreshing}
-                variant="secondary"
-                style={styles.downloadButton}
-              />
-              {manualEnabled ? <Body style={styles.hint}>Para ajuste manual: Criar -> Editor manual separado.</Body> : null}
+              <TouchableOpacity style={styles.secondaryBtn} onPress={() => void openViewer()}>
+                <Text style={styles.secondaryBtnText}>Ver video no app</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryBtn} onPress={() => void downloadInsideApp()} disabled={Boolean(downloadingUrl)}>
+                <Text style={styles.secondaryBtnText}>{downloadingUrl ? "Baixando..." : "Baixar no app"}</Text>
+              </TouchableOpacity>
             </View>
           ) : null}
-        </Card>
 
-        <Card>
-          {submitting ? (
-            <View style={styles.loadingWrap}>
-              <ActivityIndicator color={realTheme.colors.green} />
-              <Body>Iniciando edicao...</Body>
-            </View>
-          ) : (
-            <Button label="Editar com IA" onPress={() => void submit()} disabled={!canSubmit} />
-          )}
-          {!hasRemoteEditor ? <Body style={styles.hint}>Editor de video indisponivel neste ambiente agora.</Body> : null}
-          {error ? <Body style={styles.error}>{error}</Body> : null}
-        </Card>
-      </ScrollView>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {!hasRemoteEditor ? <Text style={styles.error}>Editor de video indisponivel neste ambiente.</Text> : null}
+        </ScrollView>
+      </LinearGradient>
 
       <Modal visible={Boolean(viewerUrl)} animationType="slide" transparent={false} onRequestClose={() => setViewerUrl(null)}>
         <View style={styles.viewerWrap}>
           {viewerUrl ? <Video source={{ uri: viewerUrl }} style={styles.viewerPlayer} useNativeControls resizeMode={ResizeMode.CONTAIN} isLooping={false} /> : null}
           <View style={styles.viewerActions}>
-            {downloadingUrl === viewerUrl ? <ActivityIndicator color={realTheme.colors.green} /> : null}
-            <Button
-              label={viewerUrl && downloadingUrl === viewerUrl ? "Baixando..." : "Baixar no app"}
-              onPress={() => void downloadInsideApp()}
-              disabled={!viewerUrl || downloadingUrl === viewerUrl}
-              style={styles.viewerBtn}
-            />
-            <Button label="Fechar" variant="secondary" onPress={() => setViewerUrl(null)} style={styles.viewerBtn} />
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => void downloadInsideApp()}>
+              <Text style={styles.secondaryBtnText}>{downloadingUrl ? "Baixando..." : "Baixar no app"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => setViewerUrl(null)}>
+              <Text style={styles.secondaryBtnText}>Fechar</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -451,71 +383,174 @@ export default function VideoEditorCreateScreen() {
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  bg: { flex: 1 },
   content: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 40,
     gap: 14,
-    paddingBottom: 42,
   },
-  actions: {
-    marginTop: 8,
-    gap: 10,
+  header: {
+    gap: 8,
   },
-  action: {
-    width: "100%",
+  title: {
+    color: "#eef2f8",
+    fontSize: 42,
+    lineHeight: 44,
+    letterSpacing: -0.6,
+    fontFamily: realTheme.fonts.title,
   },
-  pickedMeta: {
-    marginTop: 10,
-    gap: 2,
+  subtitle: {
+    color: "#afb7c5",
+    fontSize: 15,
+    lineHeight: 22,
+    fontFamily: realTheme.fonts.bodyRegular,
+  },
+  block: {
+    borderRadius: 23,
+    backgroundColor: "rgba(12,16,24,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    padding: 14,
+    gap: 8,
+  },
+  blockTitle: {
+    color: "#f0f3f8",
+    fontSize: 22,
+    lineHeight: 27,
+    fontFamily: realTheme.fonts.bodyBold,
+    letterSpacing: -0.4,
+  },
+  greenButton: {
+    marginTop: 2,
+    borderRadius: 999,
+    backgroundColor: "#57ef2f",
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  greenButtonText: {
+    color: "#0c2106",
+    fontSize: 24,
+    fontFamily: realTheme.fonts.bodyBold,
+    letterSpacing: -0.3,
+  },
+  fallback: {
+    color: "#a7b1c1",
+    fontSize: 12,
+    textDecorationLine: "underline",
+  },
+  meta: {
+    color: "#93a0b5",
+    fontSize: 12,
+    lineHeight: 17,
   },
   modeRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 4,
+    gap: 10,
   },
-  hint: {
-    marginTop: 6,
-    color: realTheme.colors.muted,
-  },
-  compatibility: {
-    marginTop: 8,
-    color: "#d7e8bf",
-  },
-  loadingWrap: {
-    flexDirection: "row",
+  modeChip: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 999,
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(22,27,39,0.92)",
   },
-  statusMain: {
-    color: realTheme.colors.text,
-    marginTop: 6,
-    marginBottom: 4,
+  modeChipActive: {
+    backgroundColor: "rgba(87,239,47,0.24)",
+    borderColor: "rgba(87,239,47,0.72)",
+  },
+  modeChipText: {
+    color: "#c6cdd9",
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  modeChipTextActive: {
+    color: "#ddffe0",
+  },
+  help: {
+    color: "#a7b0be",
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  label: {
+    color: "#e7ebf1",
+    fontSize: 14,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    marginTop: 4,
+  },
+  input: {
+    minHeight: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(18,22,30,0.96)",
+    paddingHorizontal: 12,
+    color: "#edf1f6",
+    fontFamily: realTheme.fonts.bodyRegular,
+  },
+  statusText: {
+    color: "#cdd5e1",
+    fontSize: 13,
+    lineHeight: 18,
   },
   timeline: {
     flexDirection: "row",
     justifyContent: "space-between",
-    flexWrap: "wrap",
-    rowGap: 6,
-    marginTop: 8,
-    marginBottom: 6,
+    marginTop: 2,
   },
-  timelineItem: {
-    color: realTheme.colors.muted,
-    fontSize: 13,
+  timelineText: {
+    fontSize: 12,
+    fontFamily: realTheme.fonts.bodySemiBold,
   },
-  timelineActive: {
-    color: realTheme.colors.green,
-    fontSize: 13,
+  cta: {
+    borderRadius: 999,
+    backgroundColor: "#57ef2f",
+    minHeight: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    shadowColor: "#53ef2b",
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
   },
-  timelineFailed: {
-    color: "#ff7070",
-    fontSize: 13,
+  ctaDisabled: {
+    opacity: 0.5,
   },
-  downloadButton: {
-    width: "100%",
+  ctaText: {
+    color: "#0d2507",
+    fontSize: 18,
+    fontFamily: realTheme.fonts.bodyBold,
   },
   completeActions: {
-    marginTop: 10,
-    gap: 10,
+    gap: 8,
+  },
+  secondaryBtn: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(15,19,27,0.95)",
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  secondaryBtnText: {
+    color: "#dce3ed",
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  error: {
+    color: "#ff7f7f",
+    fontSize: 12,
+    lineHeight: 17,
   },
   viewerWrap: {
     flex: 1,
@@ -532,12 +567,5 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 10,
     backgroundColor: "rgba(0,0,0,0.78)",
-  },
-  viewerBtn: {
-    width: "100%",
-  },
-  error: {
-    marginTop: 8,
-    color: "#ff7070",
   },
 });
