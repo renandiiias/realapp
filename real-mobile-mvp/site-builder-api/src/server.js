@@ -15,7 +15,7 @@ const BOLT_VENDOR_PATH = path.resolve(__dirname, "../vendor/bolt_diy");
 const ZAI_BASE_URL = String(process.env.ZAI_BASE_URL || process.env.EXPO_PUBLIC_ZAI_BASE_URL || "https://api.z.ai/api/paas/v4").replace(/\/+$/, "");
 const ZAI_API_KEY = String(process.env.ZAI_API_KEY || process.env.EXPO_PUBLIC_ZAI_API_KEY || "").trim();
 const ZAI_MODEL = String(process.env.ZAI_MODEL || process.env.EXPO_PUBLIC_ZAI_MODEL || "glm-4.5-air").trim();
-const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 55000);
+const ZAI_TIMEOUT_MS = Number(process.env.ZAI_TIMEOUT_MS || 90000);
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -817,7 +817,7 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
           model: ZAI_MODEL,
           thinking: { type: "disabled" },
           temperature: attempt.temperature,
-          max_tokens: 2800,
+          max_tokens: 3200,
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
@@ -855,10 +855,14 @@ async function generateCodeBundleWithZai({ prompt, previous, context }) {
       if (!valid.success) {
         throw new Error("zai_invalid_code_schema");
       }
-      if (looksLikeLowQualityOutput(prompt, valid.data)) {
-        throw new Error("zai_low_quality_output");
-      }
       lastValidCode = valid.data;
+      if (looksLikeLowQualityOutput(prompt, valid.data)) {
+        logSite("warn", "code_generate_low_quality_signal", {
+          attempt: index + 1,
+          customerId: context?.customerId || null,
+          traceId: context?.traceId || null,
+        });
+      }
       const missingSignals = qualityMissingSignals(prompt, valid.data);
       if (missingSignals.length > 0) {
         lastMissingSignals = missingSignals;
