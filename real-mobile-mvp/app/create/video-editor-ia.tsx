@@ -13,7 +13,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -78,7 +77,6 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 export default function VideoEditorIaScreen() {
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [aiMode, setAiMode] = useState<AiEditMode>("cut_captions");
-  const [stylePrompt, setStylePrompt] = useState("");
 
   const [video, setVideo] = useState<VideoItem | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +207,6 @@ export default function VideoEditorIaScreen() {
           type: picked.mimeType,
         },
         mode: aiMode,
-        instructions: stylePrompt,
       });
       setVideo(created.video);
     } catch (submitError) {
@@ -341,14 +338,6 @@ export default function VideoEditorIaScreen() {
               </TouchableOpacity>
             </View>
             <Text style={styles.help}>A IA remove pausas e adiciona legendas automaticas no video.</Text>
-            <Text style={styles.label}>Instrucao opcional de estilo</Text>
-            <TextInput
-              style={styles.input}
-              value={stylePrompt}
-              onChangeText={setStylePrompt}
-              placeholder="Ex.: estilo dinamico e direto"
-              placeholderTextColor="#70798a"
-            />
           </View>
 
           <View style={styles.block}>
@@ -503,22 +492,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginTop: 2,
-  },
-  label: {
-    color: "#e7ebf1",
-    fontSize: 14,
-    fontFamily: realTheme.fonts.bodySemiBold,
-    marginTop: 4,
-  },
-  input: {
-    minHeight: 50,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    backgroundColor: "rgba(18,22,30,0.96)",
-    paddingHorizontal: 12,
-    color: "#edf1f6",
-    fontFamily: realTheme.fonts.bodyRegular,
   },
   statusText: {
     color: "#cdd5e1",
