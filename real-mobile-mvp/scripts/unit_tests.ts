@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { initialOrdersState, ordersReducer } from "../src/store/ordersReducer";
 import type { OrderDetail } from "../src/queue/types";
 import { computeProfileReadiness } from "../src/auth/profileReadiness";
+import {
+  buildVideoDeliverableSummary,
+  humanizeVideoError,
+  mapVideoStatusToClientLabel,
+} from "../src/services/videoEditorPresenter";
 
 function testUpsertAndStatusTransition() {
   const state1 = ordersReducer(initialOrdersState, {
@@ -166,12 +171,48 @@ function testProfileReadinessMissingFields() {
   assert.equal(result.missingForProduction.includes("offerSummary"), true);
 }
 
+function testVideoStatusPresenter() {
+  assert.equal(mapVideoStatusToClientLabel(null), "Aguardando envio do video.");
+  assert.equal(mapVideoStatusToClientLabel("QUEUED"), "Preparando sua edicao.");
+  assert.equal(mapVideoStatusToClientLabel("PROCESSING", 0.2), "Analisando e selecionando os melhores trechos.");
+  assert.equal(mapVideoStatusToClientLabel("PROCESSING", 0.6), "Editando seu video com IA.");
+  assert.equal(mapVideoStatusToClientLabel("PROCESSING", 0.95), "Finalizando o video para exportacao.");
+  assert.equal(mapVideoStatusToClientLabel("COMPLETE"), "Video pronto para visualizar e baixar.");
+}
+
+function testVideoErrorHumanization() {
+  assert.equal(
+    humanizeVideoError("video_http_500:{\"detail\":\"stack trace\"}"),
+    "Tivemos um erro tecnico ao editar seu video. Tente novamente.",
+  );
+  assert.equal(
+    humanizeVideoError("video nao esta em 9:16 vertical"),
+    "Este video nao esta em 9:16. Envie um video vertical (ex.: 1080x1920).",
+  );
+}
+
+function testVideoDeliverableSummary() {
+  const summary = buildVideoDeliverableSummary({
+    kind: "video",
+    clipDurationSeconds: 14.2,
+    subtitles: { status: "applied" },
+    stylePrompt: "mais dinamico",
+  });
+  assert.equal(summary.includes("Video final processado para redes sociais."), true);
+  assert.equal(summary.includes("Duracao aproximada: 14.2s."), true);
+  assert.equal(summary.includes("Legendas automaticas aplicadas."), true);
+  assert.equal(summary.includes("Estilo solicitado considerado na edicao."), true);
+}
+
 function main() {
   testUpsertAndStatusTransition();
   testApprovalUpdatesDeliverableAndOrder();
   testProfileReadinessMinimumComplete();
   testProfileReadinessProductionComplete();
   testProfileReadinessMissingFields();
+  testVideoStatusPresenter();
+  testVideoErrorHumanization();
+  testVideoDeliverableSummary();
   // Keep output short (CI-friendly).
   console.log("unit_tests: ok");
 }

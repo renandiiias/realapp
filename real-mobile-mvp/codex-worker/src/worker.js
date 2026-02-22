@@ -7,6 +7,7 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 const CLAIM_LEASE_SECONDS = Number(process.env.CLAIM_LEASE_SECONDS || 120);
 const VIDEO_EDITOR_API_BASE_URL = (process.env.VIDEO_EDITOR_API_BASE_URL || "").replace(/\/+$/, "");
 const VIDEO_EDITOR_PUBLIC_BASE_URL = (process.env.VIDEO_EDITOR_PUBLIC_BASE_URL || VIDEO_EDITOR_API_BASE_URL).replace(/\/+$/, "");
+const SITE_BUILDER_API_BASE_URL = (process.env.SITE_BUILDER_API_BASE_URL || "http://localhost:3340").replace(/\/+$/, "");
 
 const REAL_ADS_ENABLED = String(process.env.REAL_ADS_ENABLED || "false").toLowerCase() === "true";
 const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
@@ -67,6 +68,25 @@ async function videoApi(path, init = {}) {
   const data = safeJson(raw);
   if (!res.ok) {
     throw new Error(`video_http_${res.status}:${data.detail || data.error || raw || "unknown"}`);
+  }
+  return data;
+}
+
+async function siteApi(path, init = {}) {
+  if (!SITE_BUILDER_API_BASE_URL) {
+    throw new Error("site_builder_api_not_configured");
+  }
+  const res = await fetch(`${SITE_BUILDER_API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init.headers || {}),
+    },
+  });
+  const raw = await res.text();
+  const data = safeJson(raw);
+  if (!res.ok) {
+    throw new Error(`site_builder_http_${res.status}:${data.error || raw || "unknown"}`);
   }
   return data;
 }
@@ -835,6 +855,354 @@ async function processVideoEditorOrder(order) {
   });
 }
 
+function isTransientSiteError(error) {
+  const message = String(error || "");
+  return /site_builder_http_429|site_builder_http_5\d\d|timeout|network|fetch failed/i.test(message);
+}
+
+function sanitizeSiteSlug(value, fallback) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return normalized || fallback;
+}
+
+function getSiteCopyDeliverable(order) {
+  const deliverables = Array.isArray(order?.deliverables) ? order.deliverables : [];
+  return deliverables.find((item) => item.type === "copy") || null;
+}
+
+function getApprovalForDeliverable(order, deliverableId) {
+  const approvals = Array.isArray(order?.approvals) ? order.approvals : [];
+  return approvals.find((item) => item.deliverableId === deliverableId) || null;
+}
+
+function extractBuilderSpec(order) {
+  const fromCopy = getSiteCopyDeliverable(order)?.content;
+  if (fromCopy && typeof fromCopy === "object" && !Array.isArray(fromCopy) && fromCopy.builderSpec && typeof fromCopy.builderSpec === "object") {
+    return fromCopy.builderSpec;
+  }
+  if (order?.payload?.builder && typeof order.payload.builder === "object") {
+    return order.payload.builder;
+  }
+  return null;
+}
+
+function getSitePrompt(order, feedback = "") {
+  const basePrompt =
+    String(order?.payload?.builderPrompt || "").trim() ||
+    String(order?.payload?.prompt || "").trim() ||
+    String(order?.payload?.objective || "").trim() ||
+    "Crie uma landing page simples e direta para geração de leads no WhatsApp.";
+  if (!feedback) return basePrompt;
+  return `${basePrompt}\n\nAjustes solicitados pelo cliente: ${feedback}`;
+}
+
+function buildSiteContext(order) {
+  const builder = extractBuilderSpec(order) || {};
+  return {
+    businessName: String(builder.businessName || order?.payload?.businessName || "").trim(),
+    segment: String(builder.segment || order?.payload?.segment || "").trim(),
+    city: String(builder.city || order?.payload?.city || "").trim(),
+    audience: String(builder.audience || order?.payload?.audience || "").trim(),
+    offerSummary: String(builder.offerSummary || order?.payload?.offerSummary || "").trim(),
+    mainDifferential: String(builder.mainDifferential || order?.payload?.mainDifferential || "").trim(),
+    whatsappNumber: String(builder.whatsappNumber || order?.payload?.whatsappNumber || "").trim(),
+  };
+}
+
+async function withSiteRetry(orderId, fn, { maxAttempts = 2, onRetry } = {}) {
+  let attempt = 1;
+  while (attempt <= maxAttempts) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      const transient = isTransientSiteError(error);
+      if (!transient || attempt >= maxAttempts) {
+        try {
+          error.siteRetries = Math.max(0, attempt - 1);
+        } catch {
+          // no-op
+        }
+        throw error;
+      }
+      await api(`/v1/ops/orders/${orderId}/event`, {
+        method: "POST",
+        body: JSON.stringify({
+          message: `Erro transitório no pipeline de site (tentativa ${attempt}). Nova tentativa em 4s.`,
+          statusSnapshot: "in_progress",
+        }),
+      });
+      if (typeof onRetry === "function") {
+        await onRetry({ attempt, error });
+      }
+      await sleep(4000);
+      attempt += 1;
+    }
+  }
+  throw new Error("site_retry_exhausted");
+}
+
+async function upsertSitePublication(orderId, publication) {
+  await api(`/v1/ops/orders/${orderId}/site-publication`, {
+    method: "POST",
+    body: JSON.stringify(publication),
+  });
+}
+
+async function generateSitePreview(order, reason = "") {
+  const orderId = order.id;
+  const fallbackSlug = sanitizeSiteSlug(
+    order?.payload?.builder?.businessName || order?.payload?.headline || `site-${String(orderId).slice(0, 8)}`,
+    `site-${String(orderId).slice(0, 8)}`,
+  );
+  const priorSlug = order?.sitePublication?.slug || fallbackSlug;
+
+  await upsertSitePublication(orderId, {
+    stage: "building",
+    slug: priorSlug,
+    previewUrl: order?.sitePublication?.previewUrl || undefined,
+    publicUrl: order?.sitePublication?.publicUrl || undefined,
+    retries: 0,
+    metadata: { reason: reason || "initial" },
+  });
+
+  await api(`/v1/ops/orders/${orderId}/event`, {
+    method: "POST",
+    body: JSON.stringify({
+      message: reason ? "Gerando nova versão da landing com os ajustes solicitados." : "Gerando landing page automática.",
+      statusSnapshot: "in_progress",
+    }),
+  });
+
+  let retryCount = 0;
+  const builderSpec = await withSiteRetry(
+    orderId,
+    async () => {
+    const response = await siteApi("/v1/autobuild", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: getSitePrompt(order, reason),
+        context: buildSiteContext(order),
+        currentBuilder: extractBuilderSpec(order) || undefined,
+        forceRegenerate: true,
+      }),
+    });
+    if (!response?.builderSpec || typeof response.builderSpec !== "object") {
+      throw new Error("site_autobuild_invalid_response");
+    }
+    return response.builderSpec;
+    },
+    {
+      maxAttempts: 3,
+      onRetry: async ({ attempt }) => {
+        retryCount = attempt;
+        await upsertSitePublication(orderId, {
+          stage: "building",
+          slug: priorSlug,
+          previewUrl: order?.sitePublication?.previewUrl || undefined,
+          publicUrl: order?.sitePublication?.publicUrl || undefined,
+          retries: retryCount,
+          metadata: { reason: reason || "initial", step: "autobuild" },
+        });
+      },
+    },
+  );
+
+  const preview = await withSiteRetry(
+    orderId,
+    async () => {
+      return siteApi("/v1/publish/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          orderId,
+          customerId: order.customerId,
+          slug: priorSlug,
+          builderSpec,
+        }),
+      });
+    },
+    {
+      maxAttempts: 3,
+      onRetry: async ({ attempt }) => {
+        retryCount += 1;
+        await upsertSitePublication(orderId, {
+          stage: "building",
+          slug: priorSlug,
+          previewUrl: order?.sitePublication?.previewUrl || undefined,
+          publicUrl: order?.sitePublication?.publicUrl || undefined,
+          retries: retryCount,
+          metadata: { reason: reason || "initial", step: "preview_publish", transientAttempt: attempt },
+        });
+      },
+    },
+  );
+
+  await upsertSitePublication(orderId, {
+    stage: "awaiting_approval",
+    slug: String(preview.slug || priorSlug),
+    previewUrl: String(preview.url || ""),
+    publicUrl: order?.sitePublication?.publicUrl || undefined,
+    retries: retryCount,
+    lastError: "",
+    metadata: { mode: "preview", generatedAt: new Date().toISOString() },
+  });
+
+  const sections = Array.isArray(builderSpec.blocks)
+    ? builderSpec.blocks.filter((item) => item?.enabled).map((item) => item.label || item.id).filter(Boolean)
+    : ["Hero", "Prova", "Oferta", "CTA"];
+
+  await api(`/v1/ops/orders/${orderId}/deliverables`, {
+    method: "POST",
+    body: JSON.stringify({
+      deliverables: [
+        {
+          type: "wireframe",
+          status: "submitted",
+          content: {
+            sections,
+            slug: String(preview.slug || priorSlug),
+          },
+          assetUrls: [],
+        },
+        {
+          type: "copy",
+          status: "submitted",
+          content: {
+            headline: builderSpec.headline || "Título principal",
+            cta: builderSpec.ctaLabel || "Falar no WhatsApp",
+            builderSpec,
+          },
+          assetUrls: [],
+        },
+        {
+          type: "url_preview",
+          status: "submitted",
+          content: {
+            kind: "site",
+            mode: "preview",
+            url: String(preview.url || ""),
+            slug: String(preview.slug || priorSlug),
+          },
+          assetUrls: preview.url ? [String(preview.url)] : [],
+        },
+      ],
+    }),
+  });
+
+  await api(`/v1/ops/orders/${orderId}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ status: "needs_approval", message: "Preview da landing pronto para aprovação." }),
+  });
+}
+
+async function publishSiteFinal(order) {
+  const orderId = order.id;
+  const builderSpec = extractBuilderSpec(order);
+  if (!builderSpec) {
+    throw new Error("site_builder_spec_missing_for_publish");
+  }
+
+  const slug = sanitizeSiteSlug(
+    order?.sitePublication?.slug ||
+      builderSpec.businessName ||
+      order?.payload?.headline ||
+      `site-${String(orderId).slice(0, 8)}`,
+    `site-${String(orderId).slice(0, 8)}`,
+  );
+
+  await upsertSitePublication(orderId, {
+    stage: "publishing",
+    slug,
+    previewUrl: order?.sitePublication?.previewUrl || undefined,
+    publicUrl: order?.sitePublication?.publicUrl || undefined,
+    retries: 0,
+    metadata: { mode: "final" },
+  });
+
+  await api(`/v1/ops/orders/${orderId}/event`, {
+    method: "POST",
+    body: JSON.stringify({
+      message: "Publicando versão final da landing.",
+      statusSnapshot: "in_progress",
+    }),
+  });
+
+  let retryCount = 0;
+  const published = await withSiteRetry(
+    orderId,
+    async () => {
+      return siteApi("/v1/publish/final", {
+        method: "POST",
+        body: JSON.stringify({
+          orderId,
+          customerId: order.customerId,
+          slug,
+          builderSpec,
+        }),
+      });
+    },
+    {
+      maxAttempts: 3,
+      onRetry: async ({ attempt }) => {
+        retryCount = attempt;
+        await upsertSitePublication(orderId, {
+          stage: "publishing",
+          slug,
+          previewUrl: order?.sitePublication?.previewUrl || undefined,
+          publicUrl: order?.sitePublication?.publicUrl || undefined,
+          retries: retryCount,
+          metadata: { mode: "final", step: "final_publish", transientAttempt: attempt },
+        });
+      },
+    },
+  );
+
+  const publicUrl = String(published.url || "");
+  const finalSlug = String(published.slug || slug);
+  await upsertSitePublication(orderId, {
+    stage: "published",
+    slug: finalSlug,
+    previewUrl: order?.sitePublication?.previewUrl || undefined,
+    publicUrl,
+    retries: retryCount,
+    lastError: "",
+    metadata: { mode: "final", publishedAt: new Date().toISOString() },
+  });
+
+  await api(`/v1/ops/orders/${orderId}/deliverables`, {
+    method: "POST",
+    body: JSON.stringify({
+      deliverables: [
+        {
+          type: "url_preview",
+          status: "published",
+          content: {
+            kind: "site",
+            mode: "published",
+            slug: finalSlug,
+            previewUrl: order?.sitePublication?.previewUrl || null,
+            publicUrl,
+          },
+          assetUrls: publicUrl ? [publicUrl] : [],
+        },
+      ],
+    }),
+  });
+
+  await api(`/v1/ops/orders/${orderId}/complete`, {
+    method: "POST",
+    body: JSON.stringify({
+      status: "done",
+      message: "Landing page publicada no link final.",
+    }),
+  });
+}
+
 async function processOrder(order) {
   const orderId = order.id;
   const needInfo = missingInfo(order);
@@ -868,41 +1236,35 @@ async function processOrder(order) {
   }
 
   if (order.type === "site") {
-    await api(`/v1/ops/orders/${orderId}/deliverables`, {
-      method: "POST",
-      body: JSON.stringify({
-        deliverables: [
-          {
-            type: "wireframe",
-            status: "submitted",
-            content: {
-              sections: order.payload.sections || ["Hero", "Prova", "Oferta", "CTA"],
-            },
-            assetUrls: [],
-          },
-          {
-            type: "copy",
-            status: "submitted",
-            content: {
-              headline: order.payload.headline || "Título principal",
-              cta: order.payload.cta,
-            },
-            assetUrls: [],
-          },
-          {
-            type: "url_preview",
-            status: "submitted",
-            content: "https://preview.real.local/site",
-            assetUrls: [],
-          },
-        ],
-      }),
-    });
-
-    await api(`/v1/ops/orders/${orderId}/complete`, {
-      method: "POST",
-      body: JSON.stringify({ status: "needs_approval", message: "Copy da landing pronta para aprovação." }),
-    });
+    try {
+      const copyDeliverable = getSiteCopyDeliverable(order);
+      const approval = copyDeliverable ? getApprovalForDeliverable(order, copyDeliverable.id) : null;
+      if (approval?.status === "approved") {
+        await publishSiteFinal(order);
+      } else if (approval?.status === "changes_requested") {
+        await generateSitePreview(order, String(approval.feedback || "").trim());
+      } else {
+        await generateSitePreview(order);
+      }
+    } catch (error) {
+      const retries = Number(error?.siteRetries || order?.sitePublication?.retries || 0);
+      await upsertSitePublication(orderId, {
+        stage: "failed",
+        slug: order?.sitePublication?.slug || undefined,
+        previewUrl: order?.sitePublication?.previewUrl || undefined,
+        publicUrl: order?.sitePublication?.publicUrl || undefined,
+        retries,
+        lastError: String(error).slice(0, 1800),
+        metadata: { failedAt: new Date().toISOString() },
+      });
+      await api(`/v1/ops/orders/${orderId}/complete`, {
+        method: "POST",
+        body: JSON.stringify({
+          status: "failed",
+          message: `Falha no pipeline do site: ${String(error).slice(0, 800)}`,
+        }),
+      });
+    }
     return;
   }
 

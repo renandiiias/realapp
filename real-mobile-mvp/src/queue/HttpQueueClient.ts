@@ -37,6 +37,10 @@ async function api<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      await AsyncStorage.removeItem(AUTH_TOKEN_KEY);
+      throw new Error("http_401: Sessão expirada. Faça login novamente.");
+    }
     const text = await res.text().catch(() => "");
     throw new Error(`http_${res.status}${text ? `: ${text}` : ""}`);
   }

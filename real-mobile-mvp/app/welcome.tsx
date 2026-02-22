@@ -74,7 +74,15 @@ export default function Welcome() {
       }
 
       setShowAuthModal(false);
-      router.replace({ pathname: "/onboarding/ray-x", params: { mode: "initial", prompt: clean } });
+      if (mode === "register") {
+        router.replace({ pathname: "/onboarding/ray-x", params: { mode: "initial", prompt: clean } });
+        return;
+      }
+      if (chosenRoute) {
+        router.replace({ pathname: chosenRoute, params: { prompt: clean } });
+        return;
+      }
+      router.replace("/(tabs)/home");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha ao autenticar. Tente novamente.";
       setAuthError(message);
