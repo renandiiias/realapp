@@ -11,7 +11,7 @@ import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
 const MAX_VIDEO_SECONDS = 300;
-const ACCEPTED_EXTENSIONS = [".mp4", ".mov"];
+const ACCEPTED_EXTENSIONS = [".mp4", ".mov", ".m4v"];
 
 type PickedVideo = {
   uri: string;
@@ -112,14 +112,14 @@ export default function VideoEditorManualHubScreen() {
     setError(null);
   };
 
-  const pickVideoWithDocumentPicker = async () => {
+  const pickVideoWithDocumentPicker = async (): Promise<boolean> => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "video/*",
         multiple: false,
         copyToCacheDirectory: true,
       });
-      if (result.canceled || !result.assets?.[0]) return;
+      if (result.canceled || !result.assets?.[0]) return false;
       const file = result.assets[0];
       applyPicked({
         uri: file.uri,
@@ -127,8 +127,10 @@ export default function VideoEditorManualHubScreen() {
         mimeType: file.mimeType,
         fileSize: file.size,
       });
+      return true;
     } catch (pickError) {
       setError(pickerErrorMessage(pickError));
+      return false;
     }
   };
 
@@ -145,11 +147,18 @@ export default function VideoEditorManualHubScreen() {
         mediaTypes: "videos",
         quality: 1,
       });
-      if (result.canceled || !result.assets?.[0]) return;
+      if (result.canceled) return;
+      if (!result.assets?.[0]) {
+        const fallbackOk = await pickVideoWithDocumentPicker();
+        if (!fallbackOk) setError("Nao foi possivel carregar da galeria. Tente novamente pelo fallback.");
+        return;
+      }
       applyPicked(result.assets[0]);
     } catch (pickError) {
+      const fallbackOk = await pickVideoWithDocumentPicker();
+      if (fallbackOk) return;
       if (isIosPhotos3164(pickError)) {
-        await pickVideoWithDocumentPicker();
+        setError("Nao consegui abrir esse video da galeria. Use o fallback para arquivos do iCloud.");
         return;
       }
       setError(pickerErrorMessage(pickError));
@@ -202,6 +211,7 @@ export default function VideoEditorManualHubScreen() {
 
   const progress = Math.max(0, Math.min(1, video?.progress ?? 0));
   const stage = stageFromVideo(video);
+  const statusLabel = video ? mapVideoStatusToClientLabel(video.status, progress) : picked ? "Video carregado. Toque em preparar." : "Aguardando envio do video.";
 
   return (
     <Screen plain style={styles.screen}>
@@ -232,7 +242,7 @@ export default function VideoEditorManualHubScreen() {
 
           <View style={styles.block}>
             <Text style={styles.blockTitle}>Status da edicao</Text>
-            <Text style={styles.status}>{mapVideoStatusToClientLabel(video?.status, progress)}</Text>
+            <Text style={styles.status}>{statusLabel}</Text>
             {video?.status === "PROCESSING" ? <Text style={styles.meta}>{Math.max(1, Math.round(progress * 100))}% concluido</Text> : null}
             <View style={styles.timelineRow}>
               <Text style={[styles.timelineText, stage === "prepare" ? styles.timelineActive : null]}>Preparar</Text>
