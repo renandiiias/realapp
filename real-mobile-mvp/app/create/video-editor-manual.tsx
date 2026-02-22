@@ -697,12 +697,12 @@ export default function VideoEditorManualScreen() {
                     style={styles.player}
                     useNativeControls={false}
                     resizeMode={ResizeMode.COVER}
-                    onLoad={(s) => {
-                      const dur = (s.durationMillis || 0) / 1000;
+                    onLoad={(s: any) => {
+                      const dur = (s?.durationMillis || 0) / 1000;
                       ensureEditorSetupFromLoadedVideo(dur);
                       if (!cutEnd && dur > 0) setCutEnd(dur);
                     }}
-                    onPlaybackStatusUpdate={(s) => {
+                    onPlaybackStatusUpdate={(s: any) => {
                       if (!s.isLoaded) return;
                       setPositionSeconds((s.positionMillis || 0) / 1000);
                       if (!durationSeconds && s.durationMillis) setDurationSeconds((s.durationMillis || 0) / 1000);
@@ -721,59 +721,94 @@ export default function VideoEditorManualScreen() {
                 <Text style={styles.timerMuted}>{formatTime(durationSeconds)}</Text>
               </View>
 
-              <View style={styles.transportRow}>
-                <TouchableOpacity style={styles.transportBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.max(0, (positionSeconds - 1.5) * 1000))}>
-                  <Ionicons name="play-back" size={22} color="#d8deea" />
+              <View style={styles.transportRowMock}>
+                <TouchableOpacity style={styles.transportGhostBtn} onPress={resetCut} activeOpacity={0.9}>
+                  <Ionicons name="arrow-undo" size={24} color="#cdd6e5" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.transportPlay} onPress={() => void videoRef.current?.playAsync()}>
-                  <Ionicons name="play" size={28} color="#56ee2f" />
+                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.max(0, (positionSeconds - 1.5) * 1000))} activeOpacity={0.9}>
+                  <Ionicons name="play-skip-back" size={30} color="#d8deea" />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.transportBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.min(durationSeconds, positionSeconds + 1.5) * 1000)}>
-                  <Ionicons name="play-forward" size={22} color="#d8deea" />
+                <TouchableOpacity style={styles.transportPlayMock} onPress={() => void videoRef.current?.playAsync()} activeOpacity={0.9}>
+                  <Ionicons name="play" size={30} color="#57ef2f" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void videoRef.current?.setPositionAsync(Math.min(durationSeconds, positionSeconds + 1.5) * 1000)} activeOpacity={0.9}>
+                  <Ionicons name="play-skip-forward" size={30} color="#d8deea" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.transportGhostBtn} onPress={() => void previewSegmented()} activeOpacity={0.9}>
+                  <Ionicons name="scan-outline" size={24} color="#cdd6e5" />
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.segmentCard}>
+              <View style={styles.rulerRow}>
+                <Text style={styles.rulerTime}>00:00.00</Text>
+                <Text style={styles.rulerTime}>00:15.00</Text>
+                <Text style={styles.rulerTime}>00:30.00</Text>
+                <Text style={styles.rulerTime}>00:45.00</Text>
+                <Text style={styles.rulerTime}>{formatTime(durationSeconds || 60)}</Text>
+              </View>
+
+              <View style={styles.timelineEditorCard}>
+                <View style={styles.tickRow}>
+                  {Array.from({ length: 36 }).map((_, idx) => (
+                    <View key={`tick-${idx}`} style={[styles.tick, idx % 3 === 0 ? styles.tickStrong : null]} />
+                  ))}
+                </View>
+
+                <View style={styles.stripRow}>
+                  <View style={styles.handleLeft}>
+                    <View style={styles.handleBar} />
+                  </View>
+                  <View style={styles.timelineStrip}>
+                    <LinearGradient colors={["#1f2b3f", "#2d4159", "#1f2b3f"]} style={styles.timelineThumbnailMock} />
+                    <View style={styles.playhead} />
+                  </View>
+                  <View style={styles.handleRight}>
+                    <View style={styles.handleBar} />
+                  </View>
+                </View>
+
+                <View style={styles.waveRow}>
+                  {Array.from({ length: 88 }).map((_, idx) => (
+                    <View key={`wave-${idx}`} style={[styles.waveBar, { height: 6 + ((idx * 11) % 22) }]} />
+                  ))}
+                </View>
+
                 <View style={styles.segmentHeader}>
                   <Text style={styles.segmentHeaderText}>{formatTime(cutStart)}</Text>
                   <Text style={styles.segmentHeaderText}>{formatTime(cutEnd || durationSeconds)}</Text>
                 </View>
-
-                <View style={styles.segmentList}>
-                  {segments.map((s) => (
-                    <TouchableOpacity
-                      key={s.id}
-                      style={[styles.segmentChip, s.enabled ? styles.segmentChipActive : null]}
-                      onPress={() => toggleSegment(s.id)}
-                      activeOpacity={0.9}
-                    >
-                      <Text style={[styles.segmentChipText, s.enabled ? styles.segmentChipTextActive : null]}>
-                        {s.id} {formatTime(s.start)}-{formatTime(s.end)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
               </View>
 
-              <View style={styles.toolsCard}>
-                <View style={styles.toolsTabs}>
-                  <TouchableOpacity style={[styles.toolTab, tab === "cut" ? styles.toolTabActive : null]} onPress={() => setTab("cut")}>
-                    <MaterialCommunityIcons name="content-cut" size={22} color={tab === "cut" ? "#5bf335" : "#a4adbc"} />
-                    <Text style={[styles.toolTabText, tab === "cut" ? styles.toolTabTextActive : null]}>Cortar</Text>
+              <View style={styles.toolDock}>
+                <View style={styles.toolDockRow}>
+                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("cut")} activeOpacity={0.9}>
+                    <MaterialCommunityIcons name="content-cut" size={28} color={tab === "cut" ? "#6ef94b" : "#9ea7b7"} />
+                    <Text style={[styles.toolDockText, tab === "cut" ? styles.toolDockTextActive : null]}>Cortar</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.toolTab, tab === "split" ? styles.toolTabActive : null]} onPress={() => setTab("split")}>
-                    <MaterialCommunityIcons name="content-duplicate" size={22} color={tab === "split" ? "#5bf335" : "#a4adbc"} />
-                    <Text style={[styles.toolTabText, tab === "split" ? styles.toolTabTextActive : null]}>Dividir</Text>
+                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("split")} activeOpacity={0.9}>
+                    <MaterialCommunityIcons name="content-duplicate" size={28} color={tab === "split" ? "#6ef94b" : "#9ea7b7"} />
+                    <Text style={[styles.toolDockText, tab === "split" ? styles.toolDockTextActive : null]}>Dividir</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.toolTab, tab === "text" ? styles.toolTabActive : null]} onPress={() => setTab("text")}>
-                    <MaterialCommunityIcons name="format-text" size={22} color={tab === "text" ? "#5bf335" : "#a4adbc"} />
-                    <Text style={[styles.toolTabText, tab === "text" ? styles.toolTabTextActive : null]}>Texto</Text>
+                  <TouchableOpacity style={styles.toolDockItem} onPress={() => setTab("text")} activeOpacity={0.9}>
+                    <MaterialCommunityIcons name="format-text" size={28} color={tab === "text" ? "#6ef94b" : "#9ea7b7"} />
+                    <Text style={[styles.toolDockText, tab === "text" ? styles.toolDockTextActive : null]}>Texto</Text>
                   </TouchableOpacity>
+                  <View style={styles.toolDockItem}>
+                    <MaterialCommunityIcons name="music-note" size={28} color="#7f8796" />
+                    <Text style={styles.toolDockText}>Audio</Text>
+                  </View>
+                  <View style={styles.toolDockItem}>
+                    <MaterialCommunityIcons name="magic-staff" size={28} color="#7f8796" />
+                    <Text style={styles.toolDockText}>Efeitos</Text>
+                  </View>
+                  <View style={styles.toolDockItem}>
+                    <MaterialCommunityIcons name="tune-variant" size={28} color="#7f8796" />
+                    <Text style={styles.toolDockText}>Ajustes</Text>
+                  </View>
                 </View>
 
                 {tab === "cut" ? (
-                  <View style={styles.toolBody}>
-                    <Text style={styles.toolHint}>Defina o intervalo principal do corte pelo tempo atual.</Text>
+                  <View style={styles.toolInlineActions}>
                     <View style={styles.inlineButtons}>
                       <TouchableOpacity style={styles.smallAction} onPress={markCutStart}>
                         <Text style={styles.smallActionText}>Marcar inicio</Text>
@@ -789,8 +824,7 @@ export default function VideoEditorManualScreen() {
                 ) : null}
 
                 {tab === "split" ? (
-                  <View style={styles.toolBody}>
-                    <Text style={styles.toolHint}>Divida em trechos e desligue os que nao quer no resultado final.</Text>
+                  <View style={styles.toolInlineActions}>
                     <View style={styles.inlineButtons}>
                       <TouchableOpacity style={styles.smallAction} onPress={addSplitAtCurrentTime}>
                         <Text style={styles.smallActionText}>Dividir no tempo atual</Text>
@@ -803,7 +837,7 @@ export default function VideoEditorManualScreen() {
                 ) : null}
 
                 {tab === "text" ? (
-                  <View style={styles.toolBody}>
+                  <View style={styles.toolInlineActions}>
                     <View style={styles.captionModeRow}>
                       <TouchableOpacity style={[styles.captionModeChip, captionMode === "auto" ? styles.captionModeChipActive : null]} onPress={() => setCaptionMode("auto")}>
                         <Text style={[styles.captionModeText, captionMode === "auto" ? styles.captionModeTextActive : null]}>Legenda auto</Text>
@@ -869,25 +903,15 @@ export default function VideoEditorManualScreen() {
                 ) : null}
               </View>
 
-              <View style={styles.bottomBar}>
+              <View style={styles.bottomBarMock}>
                 <TouchableOpacity style={styles.bottomAction} onPress={() => void videoRef.current?.setPositionAsync(Math.max(0, (positionSeconds - 2) * 1000))}>
-                  <Ionicons name="play-back" size={22} color="#ced6e5" />
+                  <Ionicons name="play-skip-back" size={26} color="#ced6e5" />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.bottomPlay} onPress={() => void videoRef.current?.playAsync()}>
                   <Ionicons name="play" size={34} color="#57ef2f" />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.bottomAction} onPress={() => void videoRef.current?.setPositionAsync(Math.min(durationSeconds, positionSeconds + 2) * 1000)}>
-                  <Ionicons name="play-forward" size={22} color="#ced6e5" />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.footerActions}>
-                <TouchableOpacity style={styles.secondaryButton} onPress={() => void previewSegmented()}>
-                  <Text style={styles.secondaryButtonText}>Preview editado</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.greenButton, exporting ? styles.disabled : null]} onPress={() => void exportManual()} disabled={exporting}>
-                  {exporting ? <ActivityIndicator color="#102808" /> : <MaterialCommunityIcons name="content-save-check" size={22} color="#102808" />}
-                  <Text style={styles.greenButtonText}>{exporting ? "Exportando..." : "Exportar versao manual"}</Text>
+                  <Ionicons name="play-skip-forward" size={26} color="#ced6e5" />
                 </TouchableOpacity>
               </View>
 
@@ -933,8 +957,8 @@ const styles = StyleSheet.create({
   },
   topTitle: {
     color: "#eef2f8",
-    fontSize: 50,
-    lineHeight: 54,
+    fontSize: 48,
+    lineHeight: 52,
     letterSpacing: -0.8,
     fontFamily: realTheme.fonts.title,
   },
@@ -1020,26 +1044,27 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "#57ef2f",
   },
-  transportRow: {
+  transportRowMock: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
     borderRadius: 18,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.13)",
     backgroundColor: "rgba(12,16,24,0.88)",
     paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
+    gap: 4,
   },
-  transportBtn: {
-    width: 58,
+  transportGhostBtn: {
+    width: 52,
     height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 12,
-    backgroundColor: "rgba(20,25,36,0.9)",
+    backgroundColor: "transparent",
   },
-  transportPlay: {
+  transportPlayMock: {
     width: 74,
     height: 52,
     alignItems: "center",
@@ -1048,6 +1073,106 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(87,239,47,0.52)",
     backgroundColor: "rgba(19,29,16,0.9)",
+  },
+  rulerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 2,
+  },
+  rulerTime: {
+    color: "#939caf",
+    fontSize: 13,
+    fontFamily: realTheme.fonts.bodySemiBold,
+  },
+  timelineEditorCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(11,16,24,0.92)",
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    gap: 8,
+  },
+  tickRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    height: 14,
+    paddingHorizontal: 2,
+  },
+  tick: {
+    width: 2,
+    height: 6,
+    borderRadius: 2,
+    backgroundColor: "rgba(120,129,145,0.5)",
+  },
+  tickStrong: {
+    height: 11,
+    backgroundColor: "rgba(154,165,182,0.82)",
+  },
+  stripRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  handleLeft: {
+    width: 20,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: "#57ef2f",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  handleRight: {
+    width: 20,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: "#57ef2f",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  handleBar: {
+    width: 3,
+    height: 16,
+    borderRadius: 99,
+    backgroundColor: "#1f2a1d",
+  },
+  timelineStrip: {
+    flex: 1,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    position: "relative",
+  },
+  timelineThumbnailMock: {
+    width: "100%",
+    height: 84,
+  },
+  playhead: {
+    position: "absolute",
+    left: "28%",
+    top: -2,
+    bottom: -2,
+    width: 3,
+    backgroundColor: "#60f338",
+    shadowColor: "#63f73b",
+    shadowOpacity: 0.65,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  waveRow: {
+    height: 32,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 2,
+    paddingHorizontal: 8,
+  },
+  waveBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: "rgba(87,239,47,0.25)",
   },
   segmentCard: {
     borderRadius: 20,
@@ -1089,40 +1214,37 @@ const styles = StyleSheet.create({
   segmentChipTextActive: {
     color: "#e8ffee",
   },
-  toolsCard: {
+  toolDock: {
     borderRadius: 22,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
     backgroundColor: "rgba(11,16,24,0.92)",
     padding: 12,
-    gap: 10,
-  },
-  toolsTabs: {
-    flexDirection: "row",
     gap: 8,
   },
-  toolTab: {
-    flex: 1,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.15)",
-    backgroundColor: "rgba(20,25,35,0.85)",
-    minHeight: 62,
+  toolDockRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  toolDockItem: {
+    width: "16.2%",
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
+    gap: 4,
+    paddingVertical: 3,
   },
-  toolTabActive: {
-    borderColor: "rgba(87,239,47,0.75)",
-    backgroundColor: "rgba(66,214,38,0.16)",
-  },
-  toolTabText: {
+  toolDockText: {
     color: "#a8b1c0",
-    fontSize: 14,
+    fontSize: 12,
     fontFamily: realTheme.fonts.bodySemiBold,
   },
-  toolTabTextActive: {
+  toolDockTextActive: {
     color: "#78f758",
+  },
+  toolInlineActions: {
+    gap: 8,
+    paddingTop: 4,
   },
   toolBody: {
     gap: 10,
@@ -1240,7 +1362,7 @@ const styles = StyleSheet.create({
     color: "#ff8f8f",
     fontFamily: realTheme.fonts.bodySemiBold,
   },
-  bottomBar: {
+  bottomBarMock: {
     borderRadius: 22,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
@@ -1252,25 +1374,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   bottomAction: {
-    width: 74,
-    height: 48,
+    width: 86,
+    height: 52,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 14,
     backgroundColor: "rgba(21,26,36,0.9)",
   },
   bottomPlay: {
-    width: 180,
-    height: 58,
+    width: 210,
+    height: 62,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(87,239,47,0.7)",
     backgroundColor: "rgba(19,29,16,0.94)",
     alignItems: "center",
     justifyContent: "center",
-  },
-  footerActions: {
-    gap: 10,
   },
   greenButton: {
     borderRadius: 999,
