@@ -140,7 +140,7 @@ export default function VideoEditorManualHubScreen() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: "videos",
         quality: 1,
       });
       if (result.canceled || !result.assets?.[0]) return;

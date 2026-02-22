@@ -110,7 +110,7 @@ async function pickMedia(kind: "image" | "video"): Promise<LocalMedia | null> {
   }
 
   const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: kind === "image" ? ImagePicker.MediaTypeOptions.Images : ImagePicker.MediaTypeOptions.Videos,
+    mediaTypes: kind === "image" ? "images" : "videos",
     quality: 1,
   });
 

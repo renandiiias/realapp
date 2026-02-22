@@ -2,6 +2,7 @@
   "expo": {
     "name": "Real",
     "slug": "real-mobile-mvp",
+    "scheme": "realapp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon-real.png",
