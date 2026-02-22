@@ -322,6 +322,16 @@ def auto_cut_video(
     min_segment_duration: float,
 ):
     total_duration = ffprobe_duration(input_path, trace_id=trace_id, video_id=video_id)
+    log_event(
+        "info",
+        trace_id,
+        "silencedetect",
+        "start",
+        video_id=video_id,
+        total_duration_sec=round(total_duration, 3),
+        silence_noise_db=silence_noise_db,
+        silence_min_duration=silence_min_duration,
+    )
     detect_cmd = [
         "ffmpeg",
         "-i",
@@ -348,6 +358,18 @@ def auto_cut_video(
     )
 
     segments = parse_silences(proc.stderr, total_duration, padding_before, padding_after, min_segment_duration)
+    kept_duration = sum(max(0.0, en - st) for st, en in segments)
+    reduction_pct = max(0.0, 100.0 * (1.0 - (kept_duration / total_duration))) if total_duration > 0 else 0.0
+    log_event(
+        "info",
+        trace_id,
+        "silencedetect",
+        "segments_built",
+        video_id=video_id,
+        segment_count=len(segments),
+        kept_duration_sec=round(kept_duration, 3),
+        reduction_pct=round(reduction_pct, 2),
+    )
 
     if max_duration_seconds and max_duration_seconds > 0:
         clipped: list[tuple[float, float]] = []
@@ -450,19 +472,75 @@ def whisper_transcribe_to_srt(input_path: Path, srt_output: Path, trace_id: str,
     temp_dir = WORK_DIR / f"whisper_{uuid.uuid4().hex[:8]}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
-        cmd = [
+        whisper_model = os.getenv("WHISPER_MODEL", "base")
+        whisper_language = "Portuguese" if language.lower().startswith("pt") else language
+        preferred = os.getenv("WHISPER_BIN", "").strip()
+        candidates: list[list[str]] = []
+
+        if preferred:
+            candidates.append([preferred])
+
+        for candidate in [
             "whisper",
-            input_path.as_posix(),
-            "--language",
-            "Portuguese" if language.lower().startswith("pt") else language,
-            "--model",
-            os.getenv("WHISPER_MODEL", "base"),
-            "--output_format",
-            "srt",
-            "--output_dir",
-            temp_dir.as_posix(),
-        ]
-        run_cmd(cmd, trace_id=trace_id, stage="whisper", video_id=video_id)
+            "/root/.local/bin/whisper",
+            "/usr/local/bin/whisper",
+            str((BASE_DIR / ".venv" / "bin" / "whisper").resolve()),
+        ]:
+            if shutil.which(candidate) or Path(candidate).exists():
+                candidates.append([candidate])
+
+        python_bin = os.getenv("WHISPER_PYTHON_BIN", "python3")
+        if shutil.which(python_bin):
+            candidates.append([python_bin, "-m", "whisper"])
+
+        seen: set[tuple[str, ...]] = set()
+        deduped: list[list[str]] = []
+        for c in candidates:
+            key = tuple(c)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(c)
+        candidates = deduped
+
+        if not candidates:
+            raise RuntimeError("whisper_not_configured")
+
+        last_error: Optional[str] = None
+        success = False
+        for idx, base_cmd in enumerate(candidates):
+            cmd = [
+                *base_cmd,
+                input_path.as_posix(),
+                "--language",
+                whisper_language,
+                "--model",
+                whisper_model,
+                "--output_format",
+                "srt",
+                "--output_dir",
+                temp_dir.as_posix(),
+            ]
+            log_event(
+                "info",
+                trace_id,
+                "whisper",
+                "candidate_start",
+                video_id=video_id,
+                candidate_index=idx,
+                cmd=cmd,
+            )
+            try:
+                run_cmd(cmd, trace_id=trace_id, stage="whisper", video_id=video_id)
+                success = True
+                break
+            except Exception as error:
+                last_error = str(error)
+                log_error(trace_id, "whisper", "candidate_failed", error, video_id=video_id, candidate_index=idx, cmd=cmd)
+
+        if not success:
+            raise RuntimeError(f"whisper_failed_all_candidates:{last_error or 'unknown'}")
+
         generated = temp_dir / f"{input_path.stem}.srt"
         if not generated.exists():
             raise RuntimeError("whisper_output_missing")
@@ -636,11 +714,11 @@ def process_video_pipeline(video_id: str, trace_id: str, include_subtitles: bool
             trace_id=trace_id,
             video_id=video_id,
             max_duration_seconds=max_duration_seconds,
-            silence_noise_db=-35,
-            silence_min_duration=0.35,
-            padding_before=0.08,
-            padding_after=0.12,
-            min_segment_duration=0.2,
+            silence_noise_db=-30,
+            silence_min_duration=0.25,
+            padding_before=0.05,
+            padding_after=0.10,
+            min_segment_duration=0.18,
         )
         timings["autoCutMs"] = int((time.time() - t0) * 1000)
         upsert_video_status(video_id, "PROCESSING", 0.45)
