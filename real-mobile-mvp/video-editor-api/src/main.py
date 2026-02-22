@@ -549,9 +549,80 @@ def whisper_transcribe_to_srt(input_path: Path, srt_output: Path, trace_id: str,
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def burn_subtitles(input_path: Path, subtitles_path: Path, output_path: Path, trace_id: str, video_id: Optional[str] = None):
+def _normalize_font_name(raw: str) -> str:
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        return "Arial"
+    mapping = {
+        "montserrat": "Montserrat",
+        "dm serif display": "DM Serif Display",
+        "dmserifdisplay": "DM Serif Display",
+        "poppins": "Poppins",
+        "bebas": "Bebas Neue",
+        "bebasneue": "Bebas Neue",
+        "arial": "Arial",
+        "system": "Arial",
+    }
+    key = re.sub(r"\s+", " ", cleaned.lower())
+    return mapping.get(key, cleaned[:64])
+
+
+def _hex_to_ass_bgr(color_hex: str) -> str:
+    raw = (color_hex or "").strip()
+    match = re.match(r"^#?([0-9a-fA-F]{6})$", raw)
+    if not match:
+        return "&H00FFFFFF"
+    rgb = match.group(1)
+    rr, gg, bb = rgb[0:2], rgb[2:4], rgb[4:6]
+    return f"&H00{bb.upper()}{gg.upper()}{rr.upper()}"
+
+
+def parse_subtitle_style(style_prompt: str) -> dict[str, str]:
+    text = style_prompt or ""
+    font_name = "Arial"
+    color_hex = "#FFFFFF"
+
+    font_match = re.search(r"(?:fonte|font)\s*[=:]\s*([^;\n]+)", text, flags=re.IGNORECASE)
+    if font_match:
+        font_name = _normalize_font_name(font_match.group(1))
+
+    color_match = re.search(r"(?:cor|color)\s*[=:]\s*(#[0-9a-fA-F]{6})", text, flags=re.IGNORECASE)
+    if color_match:
+        color_hex = color_match.group(1).upper()
+
+    return {
+        "font_name": font_name,
+        "color_hex": color_hex,
+        "ass_primary": _hex_to_ass_bgr(color_hex),
+    }
+
+
+def burn_subtitles(
+    input_path: Path,
+    subtitles_path: Path,
+    output_path: Path,
+    trace_id: str,
+    video_id: Optional[str] = None,
+    style_prompt: str = "",
+):
     escaped_sub = subtitles_path.as_posix().replace("'", "\\\\'")
-    style = "FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=2,MarginV=40"
+    style_cfg = parse_subtitle_style(style_prompt)
+    style = (
+        f"FontName={style_cfg['font_name']},"
+        "FontSize=20,"
+        f"PrimaryColour={style_cfg['ass_primary']},"
+        "OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=2,MarginV=40"
+    )
+    log_event(
+        "info",
+        trace_id,
+        "burn_subtitles",
+        "subtitle_style_applied",
+        video_id=video_id,
+        font_name=style_cfg["font_name"],
+        color_hex=style_cfg["color_hex"],
+        ass_primary=style_cfg["ass_primary"],
+    )
     cmd = [
         "ffmpeg",
         "-y",
@@ -699,6 +770,7 @@ def process_video_pipeline(video_id: str, trace_id: str, include_subtitles: bool
     input_path = Path(row["input_path"])
     mode = row["mode"] or "cut_captions"
     language = row["language"] or "pt-BR"
+    style_prompt = row["style_prompt"] or ""
 
     upsert_video_status(video_id, "PROCESSING", 0.1)
     auto_out = OUTPUT_DIR / f"auto_{video_id}.mp4"
@@ -733,7 +805,14 @@ def process_video_pipeline(video_id: str, trace_id: str, include_subtitles: bool
                 timings["subtitleGenerateMs"] = int((time.time() - t1) * 1000)
 
                 t2 = time.time()
-                burn_subtitles(auto_out, subtitles_out, captioned_out, trace_id=trace_id, video_id=video_id)
+                burn_subtitles(
+                    auto_out,
+                    subtitles_out,
+                    captioned_out,
+                    trace_id=trace_id,
+                    video_id=video_id,
+                    style_prompt=style_prompt,
+                )
                 timings["subtitleBurnMs"] = int((time.time() - t2) * 1000)
                 render_input = captioned_out
                 subtitles_status = "applied"
@@ -1410,7 +1489,14 @@ def manual_export(video_id: str, payload: ManualExportInput, request: Request, b
                         if not mapped_captions:
                             raise RuntimeError("manual_captions_empty")
                         write_manual_srt(mapped_captions, manual_subs)
-                        burn_subtitles(trimmed, manual_subs, burn_tmp, trace_id=trace_id, video_id=manual_video_id)
+                        burn_subtitles(
+                            trimmed,
+                            manual_subs,
+                            burn_tmp,
+                            trace_id=trace_id,
+                            video_id=manual_video_id,
+                            style_prompt=base_row["style_prompt"] or "",
+                        )
                     else:
                         whisper_transcribe_to_srt(
                             trimmed,
@@ -1419,7 +1505,14 @@ def manual_export(video_id: str, payload: ManualExportInput, request: Request, b
                             language=(payload.subtitles_language or base_row["language"] or "pt-BR"),
                             video_id=manual_video_id,
                         )
-                        burn_subtitles(trimmed, auto_subs, burn_tmp, trace_id=trace_id, video_id=manual_video_id)
+                        burn_subtitles(
+                            trimmed,
+                            auto_subs,
+                            burn_tmp,
+                            trace_id=trace_id,
+                            video_id=manual_video_id,
+                            style_prompt=base_row["style_prompt"] or "",
+                        )
                     render_input = burn_tmp
                     subtitles_status = "applied"
                 except Exception as sub_error:

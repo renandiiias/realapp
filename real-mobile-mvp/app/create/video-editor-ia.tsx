@@ -26,6 +26,23 @@ type PickedVideo = {
   sizeBytes?: number;
 };
 
+type SubtitleFontOption = {
+  id: string;
+  label: string;
+  style: {
+    fontFamily?: string;
+    fontWeight?: "400" | "500" | "600" | "700";
+    letterSpacing?: number;
+  };
+};
+
+const SUBTITLE_FONT_OPTIONS: SubtitleFontOption[] = [
+  { id: "Montserrat", label: "Montserrat", style: { fontFamily: realTheme.fonts.bodyBold } },
+  { id: "DM Serif Display", label: "DM Serif Display", style: { fontFamily: realTheme.fonts.title } },
+  { id: "Poppins", label: "Poppins", style: { fontFamily: "System", fontWeight: "600" } },
+  { id: "Bebas Neue", label: "Bebas Neue", style: { fontFamily: "System", fontWeight: "700", letterSpacing: 0.8 } },
+];
+
 function normalizeDuration(rawDuration: number | null | undefined): number {
   if (!rawDuration || !Number.isFinite(rawDuration)) return 0;
   if (rawDuration > 1000) return rawDuration / 1000;
@@ -430,6 +447,11 @@ export default function VideoEditorIaScreen() {
     "Finalizando render com qualidade social...",
   ];
 
+  const previewFontStyle = useMemo(() => {
+    const selected = SUBTITLE_FONT_OPTIONS.find((font) => font.id === subtitleFont);
+    return selected?.style ?? { fontFamily: realTheme.fonts.bodyBold };
+  }, [subtitleFont]);
+
   return (
     <Screen plain style={styles.screen}>
       <LinearGradient colors={["#07090f", "#0a0d17", "#07090f"]} style={styles.bg}>
@@ -496,9 +518,9 @@ export default function VideoEditorIaScreen() {
 
               <Text style={styles.sectionLabel}>Fonte</Text>
               <View style={styles.choiceWrap}>
-                {["Montserrat", "Poppins", "BebasNeue", "DM Serif Display"].map((font) => (
-                  <TouchableOpacity key={font} style={[styles.choiceChip, subtitleFont === font ? styles.choiceChipActive : null]} onPress={() => setSubtitleFont(font)}>
-                    <Text style={[styles.choiceChipText, subtitleFont === font ? styles.choiceChipTextActive : null]}>{font}</Text>
+                {SUBTITLE_FONT_OPTIONS.map((font) => (
+                  <TouchableOpacity key={font.id} style={[styles.choiceChip, subtitleFont === font.id ? styles.choiceChipActive : null]} onPress={() => setSubtitleFont(font.id)}>
+                    <Text style={[styles.choiceChipText, subtitleFont === font.id ? styles.choiceChipTextActive : null, font.style]}>{font.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -511,7 +533,8 @@ export default function VideoEditorIaScreen() {
               </View>
 
               <View style={styles.captionPreview}>
-                <Text style={[styles.captionPreviewText, { color: subtitleColor }]}>Legenda premium no seu estilo</Text>
+                <Text style={[styles.captionPreviewText, { color: subtitleColor }, previewFontStyle]}>Legenda premium no seu estilo</Text>
+                <Text style={styles.captionPreviewMeta}>Fonte: {subtitleFont} · Cor: {subtitleColor}</Text>
               </View>
 
               <TouchableOpacity style={styles.cta} onPress={() => void submit()}>
@@ -726,6 +749,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(20,26,38,0.88)",
     paddingHorizontal: 10,
     paddingVertical: 8,
+    minWidth: "47%",
   },
   choiceChipActive: {
     borderColor: "rgba(87,239,47,0.8)",
@@ -768,6 +792,12 @@ const styles = StyleSheet.create({
   captionPreviewText: {
     fontSize: 16,
     fontFamily: realTheme.fonts.bodyBold,
+  },
+  captionPreviewMeta: {
+    color: "#9aa6bb",
+    fontSize: 12,
+    marginTop: 4,
+    fontFamily: realTheme.fonts.bodySemiBold,
   },
   magicBlock: {
     borderRadius: 23,
