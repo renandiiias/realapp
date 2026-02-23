@@ -378,18 +378,6 @@ export default function AdsWizard() {
     }
   };
 
-  const resolveNextStepAfterPrefill = (snapshot: ConversationData): number => {
-    const mediaIndex = CONVERSATION_STEPS.findIndex((item) => item.id === "media");
-    const firstMissing = CONVERSATION_STEPS.findIndex((item, index) => {
-      if (index === 0) return false;
-      if (item.type !== "input" && item.type !== "choice") return false;
-      const value = snapshot[item.key];
-      return !String(value || "").trim();
-    });
-    if (firstMissing >= 0) return firstMissing;
-    return mediaIndex >= 0 ? mediaIndex : 1;
-  };
-
   const handleIntroSubmit = async (brief: string) => {
     if (!brief.trim() || intakeLoading) return;
     setIntakeLoading(true);
@@ -412,13 +400,13 @@ export default function AdsWizard() {
 
       const mergedDataSnapshot: ConversationData = {
         ...data,
-        objective: aiPrefill.objective || data.objective,
-        offer: aiPrefill.offer || data.offer,
-        budget: aiPrefill.budget || data.budget,
-        audience: aiPrefill.audience || data.audience,
-        region: aiPrefill.region || data.region,
-        destinationWhatsApp: aiPrefill.destinationWhatsApp || data.destinationWhatsApp,
-        style: aiPrefill.style || data.style,
+        objective: aiPrefill.objective || data.objective || "Gerar novas conversas de clientes",
+        offer: aiPrefill.offer || data.offer || "Oferta principal do negócio informada no chat",
+        budget: aiPrefill.budget || data.budget || "500_1500",
+        audience: aiPrefill.audience || data.audience || "Público descrito na conversa inicial",
+        region: aiPrefill.region || data.region || "Região principal informada pelo cliente",
+        destinationWhatsApp: aiPrefill.destinationWhatsApp || data.destinationWhatsApp || "",
+        style: aiPrefill.style || data.style || "problema_solucao",
       };
       setData(mergedDataSnapshot);
 
@@ -433,7 +421,8 @@ export default function AdsWizard() {
       });
 
       setIntroComposerOpen(false);
-      setCurrentStepIndex(resolveNextStepAfterPrefill(mergedDataSnapshot));
+      const mediaIndex = CONVERSATION_STEPS.findIndex((item) => item.id === "media");
+      setCurrentStepIndex(mediaIndex >= 0 ? mediaIndex : CONVERSATION_STEPS.length - 1);
     } catch (error) {
       logClientEvent(
         "ads_wizard",
