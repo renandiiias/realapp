@@ -599,7 +599,7 @@ function WelcomeStep({
         useNativeDriver: true,
       }),
     ]).start();
-  }, [chatOpacity, chatTranslateY, introComposerOpen, questions]);
+  }, [chatOpacity, chatTranslateY, introComposerOpen]);
 
   useEffect(() => {
     if (!messages.length) return;
