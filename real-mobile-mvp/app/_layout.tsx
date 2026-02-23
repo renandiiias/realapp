@@ -48,6 +48,7 @@ export default function RootLayout() {
         <Stack.Screen name="account/profile" />
         <Stack.Screen name="account/marketing" />
         <Stack.Screen name="account/investment" />
+        <Stack.Screen name="conversations/[thread]" />
         <Stack.Screen name="orders/[id]" />
       </Stack>
     </RealProviders>
