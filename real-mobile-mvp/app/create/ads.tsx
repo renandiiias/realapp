@@ -552,205 +552,199 @@ function WelcomeStep({
   onSubmitIntro: (brief: string) => void;
   loading: boolean;
 }) {
-  const [showChat, setShowChat] = useState(false);
   const questions = [
-    {
-      id: "channel",
-      text: "Por onde você quer que seus clientes te chamem?",
-      suggestions: ["WhatsApp", "Instagram"],
-    },
-    {
-      id: "business",
-      text: "Me conta rapidinho sobre seu negócio e a principal oferta.",
-      suggestions: [],
-    },
-    {
-      id: "region",
-      text: "Qual região você quer atingir primeiro?",
-      suggestions: ["Minha cidade", "Capital + região metropolitana"],
-    },
-    {
-      id: "audience",
-      text: "Quem é o público ideal para esse anúncio?",
-      suggestions: [],
-    },
+    { id: "channel", text: "Oi, sou a Real. Por onde você quer que seus clientes te chamem?", suggestions: ["WhatsApp", "Instagram"] },
+    { id: "business", text: "Perfeito. Agora me conta sobre seu negócio e sua principal oferta.", suggestions: [] },
+    { id: "region", text: "Qual região você quer atingir primeiro?", suggestions: ["Minha cidade", "Capital + região metropolitana"] },
+    { id: "audience", text: "Quem é o público ideal para esse anúncio?", suggestions: [] },
+    { id: "budget", text: "Quanto você pretende investir por mês?", suggestions: ["Até R$ 500", "R$ 500 - R$ 1.500", "R$ 1.500 - R$ 5.000"] },
+    { id: "destination", text: "Última: qual contato deve receber as mensagens?", suggestions: [] },
   ] as const;
 
+  type QuestionId = (typeof questions)[number]["id"];
+  type Message = { id: string; role: "assistant" | "user"; text: string };
+
   const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [followupCount, setFollowupCount] = useState(0);
+  const [answers, setAnswers] = useState<Partial<Record<QuestionId, string>>>({});
+  const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const chatOpacity = useRef(new Animated.Value(0)).current;
-  const chatTranslateY = useRef(new Animated.Value(16)).current;
-  const bubbleX = useRef(new Animated.Value(0)).current;
-  const bubbleY = useRef(new Animated.Value(0)).current;
-  const bubbleOpacity = useRef(new Animated.Value(1)).current;
+  const chatTranslateY = useRef(new Animated.Value(8)).current;
+  const chatScrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     if (!introComposerOpen) {
-      setShowChat(false);
       setQuestionIndex(0);
+      setFollowupCount(0);
       setAnswers({});
+      setMessages([]);
       setDraft("");
-      bubbleX.setValue(0);
-      bubbleY.setValue(0);
-      bubbleOpacity.setValue(1);
       chatOpacity.setValue(0);
-      chatTranslateY.setValue(16);
+      chatTranslateY.setValue(8);
       return;
     }
 
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(bubbleX, {
-          toValue: 94,
-          duration: 360,
-          useNativeDriver: true,
-        }),
-        Animated.timing(bubbleY, {
-          toValue: 126,
-          duration: 360,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.timing(bubbleOpacity, {
-        toValue: 0,
-        duration: 180,
+    setMessages([{ id: "assistant-initial", role: "assistant", text: questions[0].text }]);
+    Animated.parallel([
+      Animated.timing(chatOpacity, {
+        toValue: 1,
+        duration: 220,
         useNativeDriver: true,
       }),
-    ]).start(() => {
-      setShowChat(true);
-      Animated.parallel([
-        Animated.timing(chatOpacity, {
-          toValue: 1,
-          duration: 280,
-          useNativeDriver: true,
-        }),
-        Animated.timing(chatTranslateY, {
-          toValue: 0,
-          duration: 280,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-  }, [bubbleOpacity, bubbleX, bubbleY, chatOpacity, chatTranslateY, introComposerOpen]);
+      Animated.timing(chatTranslateY, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [chatOpacity, chatTranslateY, introComposerOpen, questions]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    const timer = setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: true }), 30);
+    return () => clearTimeout(timer);
+  }, [messages]);
 
   const currentQuestion = questions[questionIndex];
+
+  const appendAssistant = (text: string) => {
+    setMessages((prev) => [...prev, { id: `assistant-${Date.now()}-${prev.length}`, role: "assistant", text }]);
+  };
+
+  const normalizeBudgetText = (value: string): string => {
+    const lower = value.toLowerCase();
+    if (lower.includes("5000") || lower.includes("5.000") || lower.includes("5k")) return "Mais de R$ 5.000";
+    if (lower.includes("1500") || lower.includes("1.500") || lower.includes("2.000") || lower.includes("3.000")) return "R$ 1.500 - R$ 5.000";
+    if (lower.includes("500") || lower.includes("1.000")) return "R$ 500 - R$ 1.500";
+    return "Até R$ 500";
+  };
+
+  const shouldAskFollowup = (questionId: QuestionId, answer: string, tries: number): string | null => {
+    if (tries >= 2) return null;
+    if (questionId === "channel") {
+      const lower = answer.toLowerCase();
+      if (!lower.includes("whatsapp") && !lower.includes("instagram")) return "Pode me responder só com WhatsApp ou Instagram para eu configurar certinho?";
+    }
+    if (questionId === "business" && answer.length < 22) return "Me ajuda com um pouco mais de detalhe: o que você vende e qual diferencial principal?";
+    if (questionId === "region" && answer.length < 5) return "Pode detalhar melhor a região? Ex: cidade + bairro ou região metropolitana.";
+    if (questionId === "audience" && answer.length < 12) return "Quem compra mais de você hoje? Faixa de idade, perfil ou interesse já ajuda.";
+    if (questionId === "budget" && answer.length < 4) return "Me diz uma faixa aproximada mensal, tipo até R$500 ou R$500-R$1.500.";
+    if (questionId === "destination" && answer.length < 5) return "Me passa o contato que deve receber as mensagens (número ou @).";
+    return null;
+  };
+
+  const buildFinalBrief = (nextAnswers: Partial<Record<QuestionId, string>>): string => {
+    const normalizedBudget = nextAnswers.budget ? normalizeBudgetText(nextAnswers.budget) : "Não informado";
+    return [
+      `Canal principal: ${nextAnswers.channel || "Não informado"}`,
+      `Negócio e oferta: ${nextAnswers.business || "Não informado"}`,
+      `Região alvo: ${nextAnswers.region || "Não informado"}`,
+      `Público ideal: ${nextAnswers.audience || "Não informado"}`,
+      `Investimento mensal: ${normalizedBudget}`,
+      `Contato destino: ${nextAnswers.destination || "Não informado"}`,
+    ].join(". ");
+  };
 
   const submitAnswer = (rawValue: string) => {
     if (!currentQuestion || loading) return;
     const value = rawValue.trim();
     if (!value) return;
-    const next = {
-      ...answers,
-      [currentQuestion.id]: value,
-    };
-    setAnswers(next);
-    setDraft("");
-    if (questionIndex < questions.length - 1) {
-      setQuestionIndex((prev) => prev + 1);
+    setMessages((prev) => [...prev, { id: `user-${Date.now()}-${prev.length}`, role: "user", text: value }]);
+
+    const followup = shouldAskFollowup(currentQuestion.id, value, followupCount);
+    if (followup) {
+      setFollowupCount((prev) => prev + 1);
+      appendAssistant(followup);
+      setDraft("");
       return;
     }
 
-    const finalBrief = [
-      `Canal preferido: ${next.channel || "não informado"}`,
-      `Negócio e oferta: ${next.business || "não informado"}`,
-      `Região: ${next.region || "não informado"}`,
-      `Público: ${next.audience || "não informado"}`,
-    ].join(". ");
-    onSubmitIntro(finalBrief);
-  };
+    const nextAnswers = { ...answers, [currentQuestion.id]: value };
+    setAnswers(nextAnswers);
+    setDraft("");
+    setFollowupCount(0);
 
-  const rows = questions.slice(0, questionIndex + 1).flatMap((question) => {
-    const userAnswer = answers[question.id];
-    return [
-      { id: `bot-${question.id}`, from: "bot" as const, text: question.text },
-      ...(userAnswer ? [{ id: `user-${question.id}`, from: "user" as const, text: userAnswer }] : []),
-    ];
-  });
+    if (questionIndex < questions.length - 1) {
+      const nextIndex = questionIndex + 1;
+      setQuestionIndex(nextIndex);
+      appendAssistant(questions[nextIndex].text);
+      return;
+    }
+    appendAssistant("Perfeito. Estou organizando tudo e pré-preenchendo sua campanha agora.");
+    onSubmitIntro(buildFinalBrief(nextAnswers));
+  };
 
   return (
     <View style={styles.welcomeContainer}>
-      <View style={styles.iconContainer}>
-        <Body style={styles.icon}>🚀</Body>
-      </View>
-      <View style={styles.intakeStage}>
-        {!introComposerOpen ? (
-          <Button label="Começar" onPress={onStartIntro} size="large" />
-        ) : (
-          <>
-            {!showChat ? (
-              <Animated.View
-                style={[
-                  styles.intakeBubbleTravel,
-                  {
-                    opacity: bubbleOpacity,
-                    transform: [{ translateX: bubbleX }, { translateY: bubbleY }],
-                  },
-                ]}
-              >
-                <Body style={styles.intakeBubbleText}>↑</Body>
-              </Animated.View>
+      {!introComposerOpen ? (
+        <>
+          <View style={styles.iconContainer}>
+            <Body style={styles.icon}>🚀</Body>
+          </View>
+          <View style={styles.introCard}>
+            <Title style={styles.introTitle}>Clique em começar e vamos criar seu anúncio</Title>
+            <Body style={styles.introSubtitle}>A Real te guia em perguntas simples e já preenche tudo para você.</Body>
+            <Button label="Começar" onPress={onStartIntro} size="large" />
+          </View>
+        </>
+      ) : (
+        <Animated.View
+          style={[
+            styles.chatFullscreen,
+            {
+              opacity: chatOpacity,
+              transform: [{ translateY: chatTranslateY }],
+            },
+          ]}
+        >
+          <Title style={styles.chatTitle}>Vamos criar seu anúncio</Title>
+          <Body style={styles.chatSubtitle}>Conversa rápida. Eu te guio e já monto tudo para a campanha.</Body>
+
+          <ScrollView ref={chatScrollRef} style={styles.chatMessagesScroll} contentContainerStyle={styles.chatMessagesContent} showsVerticalScrollIndicator={false}>
+            {messages.map((item) => (
+              <View key={item.id} style={item.role === "assistant" ? styles.botBubbleWrap : styles.userBubbleWrap}>
+                <View style={item.role === "assistant" ? styles.botBubble : styles.userBubble}>
+                  <Body style={styles.chatBubbleText}>{item.text}</Body>
+                </View>
+              </View>
+            ))}
+
+            {currentQuestion?.suggestions?.length ? (
+              <View style={styles.quickOptions}>
+                {currentQuestion.suggestions.map((suggestion) => (
+                  <Pressable key={suggestion} style={styles.quickOptionChip} onPress={() => submitAnswer(suggestion)} disabled={loading}>
+                    <Body style={styles.quickOptionText}>{suggestion}</Body>
+                  </Pressable>
+                ))}
+              </View>
             ) : null}
-            <Animated.View
-              style={[
-                styles.chatPanel,
-                {
-                  opacity: chatOpacity,
-                  transform: [{ translateY: chatTranslateY }],
-                },
-              ]}
-            >
-              {rows.map((row) => (
-                <View key={row.id} style={row.from === "bot" ? styles.botBubbleWrap : styles.userBubbleWrap}>
-                  <View style={row.from === "bot" ? styles.botBubble : styles.userBubble}>
-                    <Body style={styles.chatBubbleText}>{row.text}</Body>
-                  </View>
-                </View>
-              ))}
+          </ScrollView>
 
-              {currentQuestion?.suggestions?.length ? (
-                <View style={styles.quickOptions}>
-                  {currentQuestion.suggestions.map((suggestion) => (
-                    <Pressable key={suggestion} style={styles.quickOptionChip} onPress={() => submitAnswer(suggestion)} disabled={loading}>
-                      <Body style={styles.quickOptionText}>{suggestion}</Body>
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null}
-
-              <Animated.View
-                style={[
-                  styles.inputDockAds,
-                  {
-                    borderColor: inputFocused ? "rgba(69,255,102,0.72)" : "rgba(255,255,255,0.16)",
-                  },
-                ]}
-              >
-                <View style={styles.inputInnerAds}>
-                  <TextInput
-                    style={styles.dockInputAds}
-                    placeholder={loading ? "Analisando..." : "Digite sua resposta"}
-                    placeholderTextColor="rgba(237,237,238,0.38)"
-                    value={draft}
-                    onChangeText={setDraft}
-                    editable={!loading}
-                    returnKeyType="send"
-                    onSubmitEditing={() => submitAnswer(draft)}
-                    autoCapitalize="sentences"
-                    autoCorrect={false}
-                    onFocus={() => setInputFocused(true)}
-                    onBlur={() => setInputFocused(false)}
-                  />
-                </View>
-                <Pressable style={[styles.sendButtonAds, (loading || !draft.trim()) && styles.buttonDisabledAds]} onPress={() => submitAnswer(draft)} disabled={loading || !draft.trim()}>
-                  {loading ? <ActivityIndicator color="#071306" size="small" /> : <Ionicons name="arrow-up" size={18} color="#071306" />}
-                </Pressable>
-              </Animated.View>
-            </Animated.View>
-          </>
-        )}
-      </View>
+          <View style={[styles.inputDockAds, { borderColor: inputFocused ? "rgba(69,255,102,0.72)" : "rgba(255,255,255,0.16)" }]}>
+            <View style={styles.inputInnerAds}>
+              <TextInput
+                style={styles.dockInputAds}
+                placeholder={loading ? "Analisando..." : "Digite sua resposta"}
+                placeholderTextColor="rgba(237,237,238,0.38)"
+                value={draft}
+                onChangeText={setDraft}
+                editable={!loading}
+                returnKeyType="send"
+                onSubmitEditing={() => submitAnswer(draft)}
+                autoCapitalize="sentences"
+                autoCorrect={false}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+              />
+            </View>
+            <Pressable style={[styles.sendButtonAds, (loading || !draft.trim()) && styles.buttonDisabledAds]} onPress={() => submitAnswer(draft)} disabled={loading || !draft.trim()}>
+              {loading ? <ActivityIndicator color="#071306" size="small" /> : <Ionicons name="arrow-up" size={18} color="#071306" />}
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -1137,17 +1131,53 @@ const styles = StyleSheet.create({
   },
   intakeStage: {
     width: "100%",
-    minHeight: 360,
+    minHeight: 560,
     alignItems: "center",
   },
-  chatPanel: {
+  introCard: {
     width: "100%",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(9, 13, 20, 0.92)",
+    padding: SPACING.lg,
+    alignItems: "center",
+    gap: SPACING.md,
+  },
+  introTitle: {
+    textAlign: "center",
+    fontSize: 22,
+  },
+  introSubtitle: {
+    textAlign: "center",
+    color: realTheme.colors.muted,
+    lineHeight: 20,
+  },
+  chatFullscreen: {
+    width: "100%",
+    minHeight: 540,
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
     backgroundColor: "rgba(9, 13, 20, 0.92)",
     padding: SPACING.md,
     gap: SPACING.sm,
+  },
+  chatTitle: {
+    fontSize: 22,
+  },
+  chatSubtitle: {
+    color: realTheme.colors.muted,
+  },
+  chatMessagesScroll: {
+    flex: 1,
+    width: "100%",
+    maxHeight: 380,
+    marginTop: 4,
+  },
+  chatMessagesContent: {
+    gap: 8,
+    paddingBottom: 8,
   },
   botBubbleWrap: {
     alignItems: "flex-start",
@@ -1197,27 +1227,6 @@ const styles = StyleSheet.create({
     color: realTheme.colors.green,
     fontFamily: realTheme.fonts.bodySemiBold,
     fontSize: 12,
-  },
-  intakeBubbleTravel: {
-    position: "absolute",
-    top: SPACING.lg,
-    left: 0,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: realTheme.colors.green,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: realTheme.colors.green,
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  intakeBubbleText: {
-    color: "#061101",
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 18,
   },
   inputDockAds: {
     borderRadius: 999,
