@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from "react";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { ScrollView, StyleSheet, View, Animated, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
@@ -200,7 +201,6 @@ export default function AdsWizard() {
     style: "",
   });
   const [inputValue, setInputValue] = useState("");
-  const [introBrief, setIntroBrief] = useState("");
   const [introComposerOpen, setIntroComposerOpen] = useState(false);
   const [intakeLoading, setIntakeLoading] = useState(false);
   const [media, setMedia] = useState<LocalMedia | null>(null);
@@ -390,16 +390,16 @@ export default function AdsWizard() {
     return mediaIndex >= 0 ? mediaIndex : 1;
   };
 
-  const handleIntroSubmit = async () => {
-    if (!introBrief.trim() || intakeLoading) return;
+  const handleIntroSubmit = async (brief: string) => {
+    if (!brief.trim() || intakeLoading) return;
     setIntakeLoading(true);
     logClientEvent("ads_wizard", "intro_brief_submitted", {
-      chars: introBrief.trim().length,
+      chars: brief.trim().length,
     });
 
     try {
       const aiPrefill = await analyzeAdsBusinessBrief({
-        brief: introBrief.trim(),
+        brief: brief.trim(),
         currentData: data,
         companyContext: {
           companyName: auth.companyProfile?.companyName ?? "",
@@ -434,7 +434,6 @@ export default function AdsWizard() {
 
       setIntroComposerOpen(false);
       setCurrentStepIndex(resolveNextStepAfterPrefill(mergedDataSnapshot));
-      setIntroBrief("");
     } catch (error) {
       logClientEvent(
         "ads_wizard",
@@ -497,9 +496,7 @@ export default function AdsWizard() {
                 setIntroComposerOpen(true);
                 logClientEvent("ads_wizard", "intro_animation_started");
               }}
-              introBrief={introBrief}
-              onChangeIntroBrief={setIntroBrief}
-              onSubmitIntro={() => void handleIntroSubmit()}
+              onSubmitIntro={(brief) => void handleIntroSubmit(brief)}
               loading={intakeLoading}
             />
           )}
@@ -547,133 +544,210 @@ export default function AdsWizard() {
 function WelcomeStep({
   introComposerOpen,
   onStartIntro,
-  introBrief,
-  onChangeIntroBrief,
   onSubmitIntro,
   loading,
 }: {
   introComposerOpen: boolean;
   onStartIntro: () => void;
-  introBrief: string;
-  onChangeIntroBrief: (value: string) => void;
-  onSubmitIntro: () => void;
+  onSubmitIntro: (brief: string) => void;
   loading: boolean;
 }) {
-  const [showComposer, setShowComposer] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const questions = [
+    {
+      id: "channel",
+      text: "Por onde você quer que seus clientes te chamem?",
+      suggestions: ["WhatsApp", "Instagram"],
+    },
+    {
+      id: "business",
+      text: "Me conta rapidinho sobre seu negócio e a principal oferta.",
+      suggestions: [],
+    },
+    {
+      id: "region",
+      text: "Qual região você quer atingir primeiro?",
+      suggestions: ["Minha cidade", "Capital + região metropolitana"],
+    },
+    {
+      id: "audience",
+      text: "Quem é o público ideal para esse anúncio?",
+      suggestions: [],
+    },
+  ] as const;
+
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
+  const chatOpacity = useRef(new Animated.Value(0)).current;
+  const chatTranslateY = useRef(new Animated.Value(16)).current;
   const bubbleX = useRef(new Animated.Value(0)).current;
   const bubbleY = useRef(new Animated.Value(0)).current;
-  const bubbleScale = useRef(new Animated.Value(1)).current;
   const bubbleOpacity = useRef(new Animated.Value(1)).current;
-  const composerOpacity = useRef(new Animated.Value(0)).current;
-  const composerLift = useRef(new Animated.Value(10)).current;
 
   useEffect(() => {
     if (!introComposerOpen) {
-      setShowComposer(false);
+      setShowChat(false);
+      setQuestionIndex(0);
+      setAnswers({});
+      setDraft("");
       bubbleX.setValue(0);
       bubbleY.setValue(0);
-      bubbleScale.setValue(1);
       bubbleOpacity.setValue(1);
-      composerOpacity.setValue(0);
-      composerLift.setValue(10);
+      chatOpacity.setValue(0);
+      chatTranslateY.setValue(16);
       return;
     }
 
-    setShowComposer(false);
     Animated.sequence([
       Animated.parallel([
         Animated.timing(bubbleX, {
-          toValue: 106,
-          duration: 300,
+          toValue: 94,
+          duration: 360,
           useNativeDriver: true,
         }),
         Animated.timing(bubbleY, {
-          toValue: 140,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(bubbleScale, {
-          toValue: 0.86,
-          duration: 300,
+          toValue: 126,
+          duration: 360,
           useNativeDriver: true,
         }),
       ]),
       Animated.timing(bubbleOpacity, {
         toValue: 0,
-        duration: 120,
+        duration: 180,
         useNativeDriver: true,
       }),
     ]).start(() => {
-      setShowComposer(true);
+      setShowChat(true);
       Animated.parallel([
-        Animated.timing(composerOpacity, {
+        Animated.timing(chatOpacity, {
           toValue: 1,
-          duration: 220,
+          duration: 280,
           useNativeDriver: true,
         }),
-        Animated.timing(composerLift, {
+        Animated.timing(chatTranslateY, {
           toValue: 0,
-          duration: 220,
+          duration: 280,
           useNativeDriver: true,
         }),
       ]).start();
     });
-  }, [bubbleOpacity, bubbleScale, bubbleX, bubbleY, composerLift, composerOpacity, introComposerOpen]);
+  }, [bubbleOpacity, bubbleX, bubbleY, chatOpacity, chatTranslateY, introComposerOpen]);
+
+  const currentQuestion = questions[questionIndex];
+
+  const submitAnswer = (rawValue: string) => {
+    if (!currentQuestion || loading) return;
+    const value = rawValue.trim();
+    if (!value) return;
+    const next = {
+      ...answers,
+      [currentQuestion.id]: value,
+    };
+    setAnswers(next);
+    setDraft("");
+    if (questionIndex < questions.length - 1) {
+      setQuestionIndex((prev) => prev + 1);
+      return;
+    }
+
+    const finalBrief = [
+      `Canal preferido: ${next.channel || "não informado"}`,
+      `Negócio e oferta: ${next.business || "não informado"}`,
+      `Região: ${next.region || "não informado"}`,
+      `Público: ${next.audience || "não informado"}`,
+    ].join(". ");
+    onSubmitIntro(finalBrief);
+  };
+
+  const rows = questions.slice(0, questionIndex + 1).flatMap((question) => {
+    const userAnswer = answers[question.id];
+    return [
+      { id: `bot-${question.id}`, from: "bot" as const, text: question.text },
+      ...(userAnswer ? [{ id: `user-${question.id}`, from: "user" as const, text: userAnswer }] : []),
+    ];
+  });
 
   return (
     <View style={styles.welcomeContainer}>
       <View style={styles.iconContainer}>
         <Body style={styles.icon}>🚀</Body>
       </View>
-      <Title style={styles.welcomeTitle}>Vamos criar sua campanha de tráfego</Title>
-      <Body style={styles.welcomeText}>
-        Em poucos passos, você define o objetivo e a Real cuida de toda a execução, desde a estratégia até a otimização.
-      </Body>
       <View style={styles.intakeStage}>
         {!introComposerOpen ? (
           <Button label="Começar" onPress={onStartIntro} size="large" />
         ) : (
           <>
-            <Title style={styles.intakeQuestion}>Me conte mais sobre o seu negócio.</Title>
-            <Body style={styles.intakeQuestionHint}>Com isso eu já adianto e pré-preencho sua campanha.</Body>
-            {!showComposer ? (
+            {!showChat ? (
               <Animated.View
                 style={[
                   styles.intakeBubbleTravel,
                   {
                     opacity: bubbleOpacity,
-                    transform: [{ translateX: bubbleX }, { translateY: bubbleY }, { scale: bubbleScale }],
+                    transform: [{ translateX: bubbleX }, { translateY: bubbleY }],
                   },
                 ]}
               >
                 <Body style={styles.intakeBubbleText}>↑</Body>
               </Animated.View>
             ) : null}
-            {showComposer ? (
+            <Animated.View
+              style={[
+                styles.chatPanel,
+                {
+                  opacity: chatOpacity,
+                  transform: [{ translateY: chatTranslateY }],
+                },
+              ]}
+            >
+              {rows.map((row) => (
+                <View key={row.id} style={row.from === "bot" ? styles.botBubbleWrap : styles.userBubbleWrap}>
+                  <View style={row.from === "bot" ? styles.botBubble : styles.userBubble}>
+                    <Body style={styles.chatBubbleText}>{row.text}</Body>
+                  </View>
+                </View>
+              ))}
+
+              {currentQuestion?.suggestions?.length ? (
+                <View style={styles.quickOptions}>
+                  {currentQuestion.suggestions.map((suggestion) => (
+                    <Pressable key={suggestion} style={styles.quickOptionChip} onPress={() => submitAnswer(suggestion)} disabled={loading}>
+                      <Body style={styles.quickOptionText}>{suggestion}</Body>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+
               <Animated.View
                 style={[
-                  styles.intakeComposer,
+                  styles.inputDockAds,
                   {
-                    opacity: composerOpacity,
-                    transform: [{ translateY: composerLift }],
+                    borderColor: inputFocused ? "rgba(69,255,102,0.72)" : "rgba(255,255,255,0.16)",
                   },
                 ]}
               >
-                <TextInput
-                  style={styles.intakeInput}
-                  placeholder="Ex.: Clínica estética, foco em harmonização, zona sul de SP..."
-                  placeholderTextColor="rgba(166,173,185,0.78)"
-                  value={introBrief}
-                  onChangeText={onChangeIntroBrief}
-                  editable={!loading}
-                  multiline
-                  maxLength={700}
-                />
-                <Pressable style={[styles.intakeSend, loading && styles.intakeSendDisabled]} onPress={onSubmitIntro} disabled={loading || !introBrief.trim()}>
-                  <Body style={styles.intakeSendText}>{loading ? "..." : "↑"}</Body>
+                <View style={styles.inputInnerAds}>
+                  <TextInput
+                    style={styles.dockInputAds}
+                    placeholder={loading ? "Analisando..." : "Digite sua resposta"}
+                    placeholderTextColor="rgba(237,237,238,0.38)"
+                    value={draft}
+                    onChangeText={setDraft}
+                    editable={!loading}
+                    returnKeyType="send"
+                    onSubmitEditing={() => submitAnswer(draft)}
+                    autoCapitalize="sentences"
+                    autoCorrect={false}
+                    onFocus={() => setInputFocused(true)}
+                    onBlur={() => setInputFocused(false)}
+                  />
+                </View>
+                <Pressable style={[styles.sendButtonAds, (loading || !draft.trim()) && styles.buttonDisabledAds]} onPress={() => submitAnswer(draft)} disabled={loading || !draft.trim()}>
+                  {loading ? <ActivityIndicator color="#071306" size="small" /> : <Ionicons name="arrow-up" size={18} color="#071306" />}
                 </Pressable>
               </Animated.View>
-            ) : null}
+            </Animated.View>
           </>
         )}
       </View>
@@ -1063,37 +1137,66 @@ const styles = StyleSheet.create({
   },
   intakeStage: {
     width: "100%",
-    minHeight: 260,
+    minHeight: 360,
     alignItems: "center",
   },
-  intakeQuestion: {
-    textAlign: "center",
-    fontSize: 21,
-    marginTop: SPACING.md,
-  },
-  intakeQuestionHint: {
-    textAlign: "center",
-    color: realTheme.colors.muted,
-    marginTop: SPACING.sm,
-    paddingHorizontal: SPACING.sm,
-  },
-  intakeComposer: {
+  chatPanel: {
     width: "100%",
-    minHeight: 56,
-    marginTop: SPACING.lg,
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.sm,
-    backgroundColor: "rgba(10, 14, 18, 0.96)",
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: "rgba(53, 226, 20, 0.35)",
-    flexDirection: "row",
-    alignItems: "flex-end",
+    borderColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(9, 13, 20, 0.92)",
+    padding: SPACING.md,
     gap: SPACING.sm,
-    shadowColor: realTheme.colors.green,
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 9,
+  },
+  botBubbleWrap: {
+    alignItems: "flex-start",
+  },
+  userBubbleWrap: {
+    alignItems: "flex-end",
+  },
+  botBubble: {
+    maxWidth: "85%",
+    borderRadius: 16,
+    borderTopLeftRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  userBubble: {
+    maxWidth: "85%",
+    borderRadius: 16,
+    borderTopRightRadius: 6,
+    backgroundColor: "rgba(53, 226, 20, 0.2)",
+    borderWidth: 1,
+    borderColor: "rgba(53, 226, 20, 0.42)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  chatBubbleText: {
+    color: realTheme.colors.text,
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  quickOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  quickOptionChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(53, 226, 20, 0.45)",
+    backgroundColor: "rgba(53, 226, 20, 0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  quickOptionText: {
+    color: realTheme.colors.green,
+    fontFamily: realTheme.fonts.bodySemiBold,
+    fontSize: 12,
   },
   intakeBubbleTravel: {
     position: "absolute",
@@ -1116,32 +1219,40 @@ const styles = StyleSheet.create({
     fontFamily: realTheme.fonts.bodyBold,
     fontSize: 18,
   },
-  intakeInput: {
+  inputDockAds: {
+    borderRadius: 999,
+    borderWidth: 2,
+    backgroundColor: "rgba(8,13,20,0.96)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 8,
+  },
+  inputInnerAds: {
     flex: 1,
+    minHeight: 38,
+    borderRadius: 999,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  dockInputAds: {
     color: realTheme.colors.text,
     fontFamily: realTheme.fonts.bodyRegular,
-    fontSize: 14,
-    lineHeight: 20,
-    minHeight: 40,
-    maxHeight: 104,
-    paddingVertical: 4,
-    textAlignVertical: "top",
+    fontSize: 16,
+    minHeight: 32,
   },
-  intakeSend: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  sendButtonAds: {
+    marginLeft: 8,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: realTheme.colors.green,
   },
-  intakeSendDisabled: {
+  buttonDisabledAds: {
     opacity: 0.4,
-  },
-  intakeSendText: {
-    color: "#061101",
-    fontFamily: realTheme.fonts.bodyBold,
-    fontSize: 16,
   },
   iconContainer: {
     width: 80,
@@ -1153,17 +1264,10 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   icon: {
-    fontSize: 40,
-  },
-  welcomeTitle: {
+    fontSize: 34,
+    lineHeight: 38,
     textAlign: "center",
-    fontSize: 28,
-  },
-  welcomeText: {
-    textAlign: "center",
-    color: realTheme.colors.muted,
-    lineHeight: 24,
-    paddingHorizontal: SPACING.md,
+    includeFontPadding: false,
   },
   inputContainer: {
     gap: SPACING.xl,
