@@ -794,6 +794,43 @@ def ffprobe_duration(path: Path, trace_id: str, video_id: Optional[str] = None) 
         raise RuntimeError(f"ffprobe_parse_failed:{error}")
 
 
+def log_media_streams(path: Path, trace_id: str, stage: str, event: str, video_id: Optional[str] = None):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=index,codec_type,codec_name,channels,sample_rate",
+        "-of",
+        "json",
+        path.as_posix(),
+    ]
+    proc = run_cmd(cmd, trace_id=trace_id, stage=f"{stage}_ffprobe_streams", video_id=video_id)
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception as error:
+        log_error(trace_id, stage, "streams_probe_parse_failed", error, video_id=video_id, path=path.as_posix())
+        return
+
+    streams = payload.get("streams") or []
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    log_event(
+        "info",
+        trace_id,
+        stage,
+        event,
+        video_id=video_id,
+        path=path.as_posix(),
+        stream_count=len(streams),
+        video_stream_count=len(video_streams),
+        audio_stream_count=len(audio_streams),
+        audio_codecs=[s.get("codec_name") for s in audio_streams],
+        audio_channels=[s.get("channels") for s in audio_streams],
+        audio_sample_rates=[s.get("sample_rate") for s in audio_streams],
+    )
+
+
 def parse_silences(stderr: str, total_duration: float, padding_before: float, padding_after: float, min_segment_duration: float):
     silence_starts: list[float] = []
     silence_ends: list[float] = []
@@ -926,6 +963,10 @@ def auto_cut_video(
                 f"{en:.3f}",
                 "-i",
                 input_path.as_posix(),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -936,9 +977,12 @@ def auto_cut_video(
                 "aac",
                 "-b:a",
                 "128k",
+                "-movflags",
+                "+faststart",
                 out_seg.as_posix(),
             ]
             run_cmd(cmd, trace_id=trace_id, stage="segment_extract", video_id=video_id)
+            log_media_streams(out_seg, trace_id=trace_id, stage="segment_extract", event="segment_streams", video_id=video_id)
             segment_files.append(out_seg)
 
         if not segment_files:
@@ -948,7 +992,7 @@ def auto_cut_video(
         concat_list = work_tmp / "concat.txt"
         concat_list.write_text("\n".join([f"file '{p.as_posix()}'" for p in segment_files]), encoding="utf-8")
 
-        cmd_concat = [
+        cmd_reencode = [
             "ffmpeg",
             "-y",
             "-f",
@@ -957,35 +1001,26 @@ def auto_cut_video(
             "0",
             "-i",
             concat_list.as_posix(),
-            "-c",
-            "copy",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
             output_path.as_posix(),
         ]
-        try:
-            run_cmd(cmd_concat, trace_id=trace_id, stage="segment_concat_copy", video_id=video_id)
-        except Exception:
-            cmd_reencode = [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_list.as_posix(),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                output_path.as_posix(),
-            ]
-            run_cmd(cmd_reencode, trace_id=trace_id, stage="segment_concat_reencode", video_id=video_id)
+        run_cmd(cmd_reencode, trace_id=trace_id, stage="segment_concat_reencode", video_id=video_id)
+        log_media_streams(output_path, trace_id=trace_id, stage="segment_concat_reencode", event="concat_streams", video_id=video_id)
     finally:
         shutil.rmtree(work_tmp, ignore_errors=True)
 
@@ -1152,6 +1187,10 @@ def burn_subtitles(
         input_path.as_posix(),
         "-vf",
         f"subtitles='{escaped_sub}':force_style='{style}'",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
         "-c:v",
         "libx264",
         "-preset",
@@ -1162,9 +1201,12 @@ def burn_subtitles(
         "aac",
         "-b:a",
         "128k",
+        "-movflags",
+        "+faststart",
         output_path.as_posix(),
     ]
     run_cmd(cmd, trace_id=trace_id, stage="burn_subtitles", video_id=video_id)
+    log_media_streams(output_path, trace_id=trace_id, stage="burn_subtitles", event="burn_output_streams", video_id=video_id)
 
 
 def deliver_social(input_path: Path, output_path: Path, trace_id: str, video_id: Optional[str] = None, width: int = 1080, height: int = 1920):
@@ -1176,6 +1218,10 @@ def deliver_social(input_path: Path, output_path: Path, trace_id: str, video_id:
         input_path.as_posix(),
         "-vf",
         vf,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
         "-c:v",
         "libx264",
         "-preset",
@@ -1186,9 +1232,12 @@ def deliver_social(input_path: Path, output_path: Path, trace_id: str, video_id:
         "aac",
         "-b:a",
         "128k",
+        "-movflags",
+        "+faststart",
         output_path.as_posix(),
     ]
     run_cmd(cmd, trace_id=trace_id, stage="deliver", video_id=video_id)
+    log_media_streams(output_path, trace_id=trace_id, stage="deliver", event="deliver_output_streams", video_id=video_id)
 
 
 def upsert_video_status(
@@ -1538,6 +1587,10 @@ def concat_from_segments(source_path: Path, segments: list[tuple[float, float]],
                 f"{en:.3f}",
                 "-i",
                 source_path.as_posix(),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -1548,9 +1601,12 @@ def concat_from_segments(source_path: Path, segments: list[tuple[float, float]],
                 "aac",
                 "-b:a",
                 "128k",
+                "-movflags",
+                "+faststart",
                 out_seg.as_posix(),
             ]
             run_cmd(cmd, trace_id=trace_id, stage="manual_segment_extract", video_id=video_id)
+            log_media_streams(out_seg, trace_id=trace_id, stage="manual_segment_extract", event="manual_segment_streams", video_id=video_id)
             segment_files.append(out_seg)
 
         if not segment_files:
@@ -1559,7 +1615,7 @@ def concat_from_segments(source_path: Path, segments: list[tuple[float, float]],
 
         concat_list = work_tmp / "concat.txt"
         concat_list.write_text("\n".join([f"file '{p.as_posix()}'" for p in segment_files]), encoding="utf-8")
-        cmd_concat = [
+        cmd_reencode = [
             "ffmpeg",
             "-y",
             "-f",
@@ -1568,35 +1624,26 @@ def concat_from_segments(source_path: Path, segments: list[tuple[float, float]],
             "0",
             "-i",
             concat_list.as_posix(),
-            "-c",
-            "copy",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
             output_path.as_posix(),
         ]
-        try:
-            run_cmd(cmd_concat, trace_id=trace_id, stage="manual_segment_concat_copy", video_id=video_id)
-        except Exception:
-            cmd_reencode = [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_list.as_posix(),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                output_path.as_posix(),
-            ]
-            run_cmd(cmd_reencode, trace_id=trace_id, stage="manual_segment_concat_reencode", video_id=video_id)
+        run_cmd(cmd_reencode, trace_id=trace_id, stage="manual_segment_concat_reencode", video_id=video_id)
+        log_media_streams(output_path, trace_id=trace_id, stage="manual_segment_concat_reencode", event="manual_concat_streams", video_id=video_id)
     finally:
         shutil.rmtree(work_tmp, ignore_errors=True)
 
