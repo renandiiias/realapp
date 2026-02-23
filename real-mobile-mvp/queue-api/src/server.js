@@ -19,6 +19,9 @@ const OPS_API_KEY = process.env.OPS_API_KEY;
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const WORKER_LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS || 120);
 const ASSET_STORAGE_DIR = process.env.ASSET_STORAGE_DIR || path.resolve(__dirname, "../storage/order-assets");
+const DEBUG_LOG_DIR = process.env.DEBUG_LOG_DIR || path.resolve(__dirname, "../storage/logs");
+const DEBUG_EVENTS_FILE = path.join(DEBUG_LOG_DIR, "client-events.jsonl");
+const INCIDENT_REPORT_DIR = path.join(DEBUG_LOG_DIR, "incidents");
 const ADS_DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.ADS_DASHBOARD_CACHE_TTL_SECONDS || 300);
 const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
 const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace(/^act_/, "");
@@ -32,6 +35,7 @@ if (!OPS_API_KEY || !WORKER_API_KEY) throw new Error("OPS_API_KEY e WORKER_API_K
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 const app = express();
+const incidentStateByFingerprint = new Map();
 
 app.use(helmet());
 app.use(
@@ -44,6 +48,137 @@ app.use(express.json({ limit: "25mb" }));
 
 function log(level, message, meta = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, message, ...meta }));
+}
+
+const SENSITIVE_KEY_RE = /(token|authorization|password|cookie|secret|api[_-]?key)/i;
+const SENSITIVE_VALUE_PATTERNS = [/bearer\s+[a-z0-9._-]+/gi, /sk-[a-z0-9]{12,}/gi];
+
+function redactValue(value, keyHint = "") {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (SENSITIVE_KEY_RE.test(keyHint)) return "***";
+    let out = value;
+    for (const pattern of SENSITIVE_VALUE_PATTERNS) {
+      out = out.replace(pattern, "***");
+    }
+    return out.slice(0, 2000);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => redactValue(item, keyHint));
+  if (typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = redactValue(item, key);
+    }
+    return out;
+  }
+  return String(value).slice(0, 300);
+}
+
+async function ensureDebugLogDirs() {
+  await fs.mkdir(DEBUG_LOG_DIR, { recursive: true });
+  await fs.mkdir(INCIDENT_REPORT_DIR, { recursive: true });
+}
+
+function sanitizeFingerprint(input) {
+  return String(input || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+}
+
+function computeFingerprint({ stage, event, meta }) {
+  const errorType = String(meta?.error_type || meta?.errorType || meta?.name || "unknown_error").slice(0, 120);
+  const message = String(meta?.error || meta?.message || event || "no_message").slice(0, 320);
+  const stack = String(meta?.stack || "").split("\n").slice(0, 6).join("|").slice(0, 600);
+  const context = String(meta?.context || stage || "").slice(0, 180);
+  return `${errorType}::${message}::${stack}::${context}`;
+}
+
+function summarizeImpact(level) {
+  if (level >= 3) return "Crítico: falha recorrente com correlação por trace_id necessária.";
+  if (level >= 2) return "Alto: erro recorrente afeta fluxo do usuário e exige investigação imediata.";
+  if (level >= 1) return "Moderado: recorrência detectada, monitoramento ampliado.";
+  return "Baixo: ocorrência isolada.";
+}
+
+async function writeIncidentReport({ fingerprint, level, frequency, event }) {
+  const ts = new Date().toISOString();
+  const safeFingerprint = sanitizeFingerprint(fingerprint) || "unknown";
+  const fileName = `incident-${safeFingerprint}-${ts.replace(/[:.]/g, "-")}.md`;
+  const fullPath = path.join(INCIDENT_REPORT_DIR, fileName);
+  const body = [
+    `# Incident ${safeFingerprint}`,
+    "",
+    `- horário: ${ts}`,
+    `- fingerprint: ${fingerprint}`,
+    `- frequência: ${frequency} ocorrências em 15 minutos`,
+    `- impacto: ${summarizeImpact(level)}`,
+    "- hipótese: regressão funcional ou instabilidade intermitente no fluxo de entregas/serviços.",
+    `- tentativas feitas: escalonamento automático para L${level}, coleta de logs detalhados e redacted.`,
+    "- próximos passos: validar stack/trace_id, reproduzir em ambiente controlado, aplicar correção e monitorar 30 minutos.",
+    "- status: aberto",
+    "",
+    "## Último evento",
+    "```json",
+    JSON.stringify(event, null, 2),
+    "```",
+    "",
+  ].join("\n");
+  await fs.writeFile(fullPath, body, "utf8");
+  return fullPath;
+}
+
+async function handleIncidentEscalation({ fingerprint, baseEvent, now }) {
+  const nowMs = now.getTime();
+  const bucket = incidentStateByFingerprint.get(fingerprint) || {
+    level: 0,
+    timestamps: [],
+    lastAtMs: 0,
+  };
+
+  if (bucket.lastAtMs > 0 && nowMs - bucket.lastAtMs > 30 * 60 * 1000) {
+    bucket.level = 0;
+    bucket.timestamps = [];
+  }
+
+  bucket.lastAtMs = nowMs;
+  bucket.timestamps = bucket.timestamps.filter((tsMs) => nowMs - tsMs <= 15 * 60 * 1000);
+  bucket.timestamps.push(nowMs);
+
+  const frequency = bucket.timestamps.length;
+  const nextLevel = frequency >= 8 ? 3 : frequency >= 5 ? 2 : frequency >= 3 ? 1 : 0;
+  bucket.level = nextLevel;
+  incidentStateByFingerprint.set(fingerprint, bucket);
+
+  const escalationEvent = {
+    ...baseEvent,
+    incident: {
+      fingerprint,
+      frequency_15m: frequency,
+      level: `L${nextLevel}`,
+      trace_id: baseEvent.trace_id,
+      run_id: baseEvent.trace_id,
+    },
+  };
+
+  let incidentReportPath = null;
+  if (nextLevel >= 2) {
+    incidentReportPath = await writeIncidentReport({
+      fingerprint,
+      level: nextLevel,
+      frequency,
+      event: escalationEvent,
+    });
+  }
+
+  return {
+    level: nextLevel,
+    frequency,
+    incidentReportPath,
+    escalationEvent,
+  };
 }
 
 const createOrderSchema = z.object({
@@ -179,6 +314,16 @@ const sitePublicationSchema = z.object({
   retries: z.number().int().min(0).max(10).optional(),
   lastError: z.string().max(2000).optional(),
   metadata: z.any().optional(),
+});
+
+const debugClientEventSchema = z.object({
+  trace_id: z.string().min(4).max(180),
+  stage: z.string().min(2).max(120),
+  event: z.string().min(2).max(160),
+  level: z.enum(["info", "warn", "error"]).optional(),
+  ts_utc: z.string().datetime().optional(),
+  fingerprint: z.string().max(1000).optional(),
+  meta: z.record(z.any()).optional(),
 });
 
 function parseBearerToken(req) {
@@ -853,6 +998,58 @@ app.get("/ready", async (_req, res) => {
     return res.json({ ready: true });
   } catch {
     return res.status(500).json({ ready: false });
+  }
+});
+
+app.post("/v1/debug/client-events", async (req, res) => {
+  const parsed = debugClientEventSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Dados inválidos." });
+  }
+
+  const now = new Date();
+  const tsUtc = parsed.data.ts_utc || now.toISOString();
+  const level = parsed.data.level || "info";
+  const safeMeta = redactValue(parsed.data.meta || {}, "meta");
+  const fingerprint = parsed.data.fingerprint || computeFingerprint({ stage: parsed.data.stage, event: parsed.data.event, meta: safeMeta });
+
+  const eventRow = {
+    ts_utc: tsUtc,
+    received_at_utc: now.toISOString(),
+    source: "mobile_app",
+    trace_id: parsed.data.trace_id,
+    stage: parsed.data.stage,
+    event: parsed.data.event,
+    level,
+    fingerprint,
+    meta: safeMeta,
+  };
+
+  try {
+    await ensureDebugLogDirs();
+    await fs.appendFile(DEBUG_EVENTS_FILE, `${JSON.stringify(eventRow)}\n`, "utf8");
+
+    let escalation = null;
+    if (level === "error") {
+      escalation = await handleIncidentEscalation({
+        fingerprint,
+        baseEvent: eventRow,
+        now,
+      });
+      await fs.appendFile(DEBUG_EVENTS_FILE, `${JSON.stringify(escalation.escalationEvent)}\n`, "utf8");
+    }
+
+    return res.status(202).json({
+      ok: true,
+      level: escalation ? `L${escalation.level}` : "L0",
+      frequency_15m: escalation?.frequency || (level === "error" ? 1 : 0),
+      incident_report: escalation?.incidentReportPath || null,
+    });
+  } catch (error) {
+    log("error", "debug_client_events_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return res.status(500).json({ error: "Falha ao persistir logs." });
   }
 });
 
