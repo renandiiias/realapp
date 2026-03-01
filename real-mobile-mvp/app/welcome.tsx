@@ -202,36 +202,12 @@ export default function Welcome() {
               <Body>Campanha de anúncios para leads e vendas.</Body>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.serviceItem}
-              activeOpacity={0.9}
-              onPress={() => {
-                setChosenRoute("/create/site");
-                setShowServiceModal(false);
-              }}
-            >
-              <SubTitle style={styles.serviceTitle}>Site</SubTitle>
-              <Body>Landing page para conversão.</Body>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.serviceItem}
-              activeOpacity={0.9}
-              onPress={() => {
-                setChosenRoute("/create/video-editor");
-                setShowServiceModal(false);
-              }}
-            >
-              <SubTitle style={styles.serviceTitle}>Editor de Vídeo</SubTitle>
-              <Body>Envie ou grave um vídeo curto para edição.</Body>
-            </TouchableOpacity>
-
             <View style={[styles.serviceItem, styles.serviceDisabled]}>
               <View style={styles.comingSoonRow}>
-                <SubTitle style={styles.serviceTitle}>Conteúdo</SubTitle>
+                <SubTitle style={styles.serviceTitle}>Mais serviços</SubTitle>
                 <Text style={styles.soonBadge}>Em breve</Text>
               </View>
-              <Body>Calendário e criativos serão liberados no próximo ciclo.</Body>
+              <Body>Site, vídeo e novos serviços seguem disponíveis apenas em preview interno neste ciclo.</Body>
             </View>
 
             <Pressable onPress={() => setShowServiceModal(false)}>

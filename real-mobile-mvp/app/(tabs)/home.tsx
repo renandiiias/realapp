@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { Animated, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAuth } from "../../src/auth/AuthProvider";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
 import { PROFILE_FIELD_LABELS } from "../../src/auth/profileReadiness";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -25,6 +26,10 @@ const quickServices: Array<{ id: "site" | "ads" | "video"; label: string; prompt
 
 export default function Home() {
   const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
+  const visiblePromptExamples = hasInternalPreviewAccess
+    ? promptExamples
+    : promptExamples.filter((item) => !/site/i.test(item) && !/vídeo/i.test(item));
   const params = useLocalSearchParams<{ prompt?: string }>();
   const [prompt, setPrompt] = useState("");
   const [routing, setRouting] = useState(false);
@@ -72,7 +77,7 @@ export default function Home() {
   useEffect(() => {
     if (prompt.trim().length > 0) return;
 
-    const sample = promptExamples[exampleIndex] ?? "";
+    const sample = visiblePromptExamples[exampleIndex] ?? "";
     if (!sample) return;
     const speed = deleting ? 18 : 34;
 
@@ -92,11 +97,11 @@ export default function Home() {
       }
 
       setDeleting(false);
-      setExampleIndex((idx) => (idx + 1) % promptExamples.length);
+      setExampleIndex((idx) => (idx + 1) % visiblePromptExamples.length);
     }, typedPrompt.length === sample.length && !deleting ? 1250 : speed);
 
     return () => clearTimeout(timer);
-  }, [typedPrompt, deleting, exampleIndex, prompt]);
+  }, [typedPrompt, deleting, exampleIndex, prompt, visiblePromptExamples]);
 
   const startFromPrompt = async () => {
     const clean = prompt.trim();
@@ -127,6 +132,9 @@ export default function Home() {
     outputRange: [0.1, 0.28],
   });
   const missingLabels = auth.missingForProduction.map((field) => PROFILE_FIELD_LABELS[field]).slice(0, 3);
+  const visibleQuickServices = hasInternalPreviewAccess
+    ? quickServices
+    : quickServices.filter((item) => item.id === "ads");
 
   return (
     <Screen>
@@ -168,7 +176,7 @@ export default function Home() {
           </Animated.View>
 
           <View style={styles.quickServicesRow}>
-            {quickServices.map((item) => (
+            {visibleQuickServices.map((item) => (
               <Text key={item.id} style={styles.quickServiceCard} onPress={() => setPrompt(item.prompt)}>
                 {item.label}
               </Text>

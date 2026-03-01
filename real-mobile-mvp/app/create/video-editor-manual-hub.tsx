@@ -2,9 +2,11 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
-import { router } from "expo-router";
+import { Redirect, router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { createManualEditorSession, fetchVideo, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
 import { humanizeVideoError } from "../../src/services/videoEditorPresenter";
 import { realTheme } from "../../src/theme/realTheme";
@@ -60,6 +62,8 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "process" | "done"
 }
 
 export default function VideoEditorManualHubScreen() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
   const [picked, setPicked] = useState<PickedVideo | null>(null);
   const [video, setVideo] = useState<VideoItem | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -226,6 +230,10 @@ export default function VideoEditorManualHubScreen() {
     if (video.status === "COMPLETE") return "Portal pronto. Agora voce pode abrir e editar.";
     return "Falha na preparacao. Tente novamente.";
   })();
+
+  if (!hasInternalPreviewAccess) {
+    return <Redirect href="/create/ads" />;
+  }
 
   return (
     <Screen plain style={styles.screen}>

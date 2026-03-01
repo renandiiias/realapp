@@ -1,11 +1,20 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { Redirect, router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
 export default function VideoEditorHubScreen() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
+
+  if (!hasInternalPreviewAccess) {
+    return <Redirect href="/create/ads" />;
+  }
+
   return (
     <Screen plain style={styles.screen}>
       <LinearGradient colors={["#07090f", "#0a0d17", "#07090f"]} style={styles.bg}>

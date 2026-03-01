@@ -2,9 +2,11 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { ResizeMode, Video } from "expo-av";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
+import { Redirect, router } from "expo-router";
 import { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { createManualEditorSession, fetchVideo, getDownloadUrl, submitManualSourceJob, type VideoItem } from "../../src/services/videoEditorApi";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
@@ -108,6 +110,8 @@ function splitSegments(cutStart: number, cutEnd: number, splitPoints: number[], 
 }
 
 export default function VideoEditorManualScreen() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
   const videoRef = useRef<Video | null>(null);
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("manual"));
 
@@ -138,6 +142,7 @@ export default function VideoEditorManualScreen() {
   const [captionEnd, setCaptionEnd] = useState("1.50");
   const [captionDraft, setCaptionDraft] = useState("");
   const [manualCaptions, setManualCaptions] = useState<ManualCaption[]>([]);
+
   const [brightness, setBrightness] = useState(0);
   const [contrast, setContrast] = useState(1);
 
@@ -628,6 +633,10 @@ export default function VideoEditorManualScreen() {
       setExporting(false);
     }
   };
+
+  if (!hasInternalPreviewAccess) {
+    return <Redirect href="/create/ads" />;
+  }
 
   return (
     <Screen plain style={styles.screen}>

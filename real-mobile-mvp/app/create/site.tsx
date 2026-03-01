@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { Redirect } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,6 +20,8 @@ import {
   type LiveSiteGenerateResponse,
   type SiteCodeBundle,
 } from "../../src/services/siteBuilderApi";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 
@@ -106,6 +109,8 @@ function phaseLabel(state: UiState, publishing: boolean): string {
 }
 
 export default function SiteCreatorV3() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -319,6 +324,10 @@ export default function SiteCreatorV3() {
       setPublishing(false);
     }
   };
+
+  if (!hasInternalPreviewAccess) {
+    return <Redirect href="/create/ads" />;
+  }
 
   return (
     <Screen plain style={styles.screen}>

@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ImageBackground, Pressable, ScrollView, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
 import Svg, { Circle, Defs, Line, LinearGradient as SvgLinearGradient, Path, Rect, Stop } from "react-native-svg";
 import { fetchAdsDashboardSnapshot, type AdsDashboardDailyPoint, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { buildGrowthData, buildKPIData, buildScaleProjection, calculateAdsDashboardMetrics } from "../../src/services/adsDashboardService";
 import { realTheme } from "../../src/theme/realTheme";
@@ -57,8 +59,10 @@ const performanceCards: PerformanceCard[] = [
 ];
 
 export default function Orders() {
+  const auth = useAuth();
   const queue = useQueue();
   const [remoteSnapshot, setRemoteSnapshot] = useState<AdsDashboardSnapshot | null>(null);
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
 
   const pendingApprovals = queue.listPendingApprovals().length;
   const adsDashboard = useMemo(
@@ -90,6 +94,9 @@ export default function Orders() {
   }, []);
 
   const runningCreatives = useMemo(() => remoteSnapshot?.creativesRunning ?? [], [remoteSnapshot]);
+  const visiblePerformanceCards = hasInternalPreviewAccess
+    ? performanceCards
+    : performanceCards.filter((item) => item.id === "ads");
 
   const kpi = useMemo(() => {
     const normalizedRemote =
@@ -205,7 +212,7 @@ export default function Orders() {
           <SubTitle>Seus anúncios ativos</SubTitle>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardsRow}>
-          {performanceCards.map((item) => (
+          {visiblePerformanceCards.map((item) => (
             <Pressable key={item.id} style={styles.performanceCard} onPress={() => router.push(item.route)}>
               <ImageBackground source={item.image} style={styles.performanceImage} imageStyle={styles.performanceImageStyle} />
               <View style={styles.performanceBody}>

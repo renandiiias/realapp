@@ -1,6 +1,8 @@
 import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View, type ImageSourcePropType } from "react-native";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Screen } from "../../src/ui/components/Screen";
 import { Body } from "../../src/ui/components/Typography";
@@ -37,11 +39,17 @@ const serviceCards: Array<{
 ];
 
 export default function Create() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
+  const visibleCards = hasInternalPreviewAccess
+    ? serviceCards
+    : serviceCards.filter((item) => item.id === "ads");
+
   return (
     <Screen style={styles.screen} plain>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.list}>
-          {serviceCards.map((item) => (
+          {visibleCards.map((item) => (
             <TouchableOpacity key={item.id} style={styles.card} activeOpacity={0.92} onPress={() => router.push(item.route as never)}>
               <ImageBackground source={item.image} style={styles.cardImage} imageStyle={styles.cardImageStyle}>
                 <LinearGradient

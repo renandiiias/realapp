@@ -2,10 +2,13 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { ResizeMode, Video } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
+import { Redirect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Sharing from "expo-sharing";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { canAccessInternalPreviews } from "../../src/auth/accessControl";
+import { useAuth } from "../../src/auth/AuthProvider";
 import { makeClientTraceId, sanitizeUri, sendVideoClientLog } from "../../src/services/videoEditorDebugLog";
 import { fetchVideo, getDownloadUrl, submitVideoEditJob, type AiEditMode, type VideoItem } from "../../src/services/videoEditorApi";
 import { pickVideoWithRecovery } from "../../src/services/videoPickerRecovery";
@@ -80,6 +83,8 @@ function stageFromVideo(video: VideoItem | null): "prepare" | "edit" | "deliver"
 }
 
 export default function VideoEditorIaScreen() {
+  const auth = useAuth();
+  const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
   const [flowTraceId, setFlowTraceId] = useState(() => makeClientTraceId("ia"));
   const [funnelStep, setFunnelStep] = useState<FunnelStep>("upload");
 
@@ -392,6 +397,10 @@ export default function VideoEditorIaScreen() {
     const selected = SUBTITLE_FONT_OPTIONS.find((font) => font.id === subtitleFont);
     return selected?.style ?? { fontFamily: realTheme.fonts.bodyBold };
   }, [subtitleFont]);
+
+  if (!hasInternalPreviewAccess) {
+    return <Redirect href="/create/ads" />;
+  }
 
   return (
     <Screen plain style={styles.screen}>
