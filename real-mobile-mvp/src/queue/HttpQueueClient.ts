@@ -72,6 +72,41 @@ export class HttpQueueClient implements QueueClient {
     });
   }
 
+  async getWallet(): Promise<{
+    planActive: boolean;
+    walletBalance: number;
+    currency: "BRL";
+    minTopup: number;
+    recommendedTopup: number;
+  }> {
+    return api(`${this.baseUrl}/v1/billing/wallet`, { method: "GET" });
+  }
+
+  async createPixTopup(amount: number): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    pixCopyPaste: string;
+    qrCodeBase64?: string;
+    expiresAt?: string | null;
+  }> {
+    return api(`${this.baseUrl}/v1/billing/topups/pix`, {
+      method: "POST",
+      body: JSON.stringify({ amount } satisfies Json),
+    });
+  }
+
+  async getTopupStatus(topupId: string): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    approvedAt?: string | null;
+    failureReason?: string | null;
+    expiresAt?: string | null;
+  }> {
+    return api(`${this.baseUrl}/v1/billing/topups/${topupId}`, { method: "GET" });
+  }
+
   async createOrder(input: CreateOrderInput): Promise<Order> {
     return api<Order>(`${this.baseUrl}/v1/orders`, {
       method: "POST",
@@ -121,5 +156,17 @@ export class HttpQueueClient implements QueueClient {
       method: "POST",
       body: JSON.stringify(input satisfies Json),
     });
+  }
+
+  async pauseAdsPublication(orderId: string): Promise<void> {
+    await api(`${this.baseUrl}/v1/ads/publications/${orderId}/pause`, { method: "POST" });
+  }
+
+  async resumeAdsPublication(orderId: string): Promise<void> {
+    await api(`${this.baseUrl}/v1/ads/publications/${orderId}/resume`, { method: "POST" });
+  }
+
+  async stopAdsPublication(orderId: string): Promise<void> {
+    await api(`${this.baseUrl}/v1/ads/publications/${orderId}/stop`, { method: "POST" });
   }
 }

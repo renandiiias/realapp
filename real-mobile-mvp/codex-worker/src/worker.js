@@ -1,26 +1,93 @@
+const fs = require("node:fs/promises");
+const path = require("node:path");
 require("dotenv").config();
 
 const QUEUE_API_BASE_URL = (process.env.QUEUE_API_BASE_URL || "http://localhost:3334").replace(/\/+$/, "");
 const WORKER_API_KEY = process.env.WORKER_API_KEY;
 const WORKER_ID = process.env.WORKER_ID || `codex-worker-${process.pid}`;
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
+const TOPUP_RECONCILIATION_INTERVAL_MS = Number(process.env.TOPUP_RECONCILIATION_INTERVAL_MS || 60000);
 const CLAIM_LEASE_SECONDS = Number(process.env.CLAIM_LEASE_SECONDS || 120);
 const VIDEO_EDITOR_API_BASE_URL = (process.env.VIDEO_EDITOR_API_BASE_URL || "").replace(/\/+$/, "");
 const VIDEO_EDITOR_PUBLIC_BASE_URL = (process.env.VIDEO_EDITOR_PUBLIC_BASE_URL || VIDEO_EDITOR_API_BASE_URL).replace(/\/+$/, "");
 const SITE_BUILDER_API_BASE_URL = (process.env.SITE_BUILDER_API_BASE_URL || "http://localhost:3340").replace(/\/+$/, "");
+const DEBUG_LOG_DIR = process.env.DEBUG_LOG_DIR || path.resolve(__dirname, "../storage/logs");
+const WORKER_LOG_FILE = path.join(DEBUG_LOG_DIR, "worker-events.jsonl");
 
 const REAL_ADS_ENABLED = String(process.env.REAL_ADS_ENABLED || "false").toLowerCase() === "true";
 const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
 const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace(/^act_/, "");
 const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
 const META_API_BASE = "https://graph.facebook.com";
+let lastTopupReconciliationAt = 0;
+let debugLogDirsReadyPromise = null;
 
 if (!WORKER_API_KEY) {
   throw new Error("WORKER_API_KEY é obrigatória.");
 }
 
+function redactValue(value, keyHint = "") {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (/(token|authorization|password|cookie|secret|api[_-]?key)/i.test(keyHint)) return "***";
+    return value
+      .replace(/bearer\s+[a-z0-9._-]+/gi, "***")
+      .replace(/sk-[a-z0-9]{12,}/gi, "***")
+      .slice(0, 2000);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => redactValue(item, keyHint));
+  if (typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = redactValue(item, key);
+    }
+    return out;
+  }
+  return String(value).slice(0, 300);
+}
+
+async function ensureDebugLogDirs() {
+  await fs.mkdir(DEBUG_LOG_DIR, { recursive: true });
+}
+
+function ensureDebugLogDirsReady() {
+  if (!debugLogDirsReadyPromise) {
+    debugLogDirsReadyPromise = ensureDebugLogDirs().catch((error) => {
+      debugLogDirsReadyPromise = null;
+      throw error;
+    });
+  }
+  return debugLogDirsReadyPromise;
+}
+
+async function appendWorkerLog(row) {
+  try {
+    await ensureDebugLogDirsReady();
+    await fs.appendFile(WORKER_LOG_FILE, `${JSON.stringify(redactValue(row, "log"))}\n`, "utf8");
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "error",
+        workerId: WORKER_ID,
+        message: "worker_log_append_failed",
+        error: String(error),
+      }),
+    );
+  }
+}
+
 function log(level, message, meta = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level, workerId: WORKER_ID, message, ...meta }));
+  const event = {
+    ts: new Date().toISOString(),
+    level,
+    workerId: WORKER_ID,
+    message,
+    ...redactValue(meta, "meta"),
+  };
+  console.log(JSON.stringify(event));
+  void appendWorkerLog(event);
 }
 
 function sleep(ms) {
@@ -638,6 +705,14 @@ async function publishAdsWithRetry(order, maxAttempts = 2) {
 }
 
 async function processAdsOrder(order) {
+  const debit = await api(`/v1/ops/orders/${order.id}/debit-ads-budget`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (!debit?.ok) {
+    throw new Error("wallet_debit_failed");
+  }
+
   await api(`/v1/ops/orders/${order.id}/event`, {
     method: "POST",
     body: JSON.stringify({
@@ -1224,6 +1299,17 @@ async function processOrder(order) {
     try {
       await processAdsOrder(order);
     } catch (error) {
+      const message = String(error || "");
+      if (/http_409:.*(insufficient_balance|missing_plan)/i.test(message)) {
+        await api(`/v1/ops/orders/${orderId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({
+            status: "waiting_payment",
+            message: "Pedido aguardando assinatura ativa e saldo mínimo para publicação.",
+          }),
+        });
+        return;
+      }
       await api(`/v1/ops/orders/${orderId}/complete`, {
         method: "POST",
         body: JSON.stringify({
@@ -1316,6 +1402,21 @@ async function loop() {
   while (true) {
     let hadClaim = false;
     try {
+      if (Date.now() - lastTopupReconciliationAt >= TOPUP_RECONCILIATION_INTERVAL_MS) {
+        lastTopupReconciliationAt = Date.now();
+        try {
+          const reconciled = await api("/v1/ops/billing/topups/reconcile", {
+            method: "POST",
+            body: JSON.stringify({ limit: 20 }),
+          });
+          if (reconciled?.approved || reconciled?.failed) {
+            log("info", "topups_reconciled", reconciled);
+          }
+        } catch (error) {
+          log("warn", "topups_reconcile_failed", { error: String(error) });
+        }
+      }
+
       const claimed = await api("/v1/ops/orders/claim", {
         method: "POST",
         body: JSON.stringify({ workerId: WORKER_ID, leaseSeconds: CLAIM_LEASE_SECONDS }),
@@ -1340,6 +1441,18 @@ async function loop() {
     }
   }
 }
+
+void ensureDebugLogDirsReady().catch((error) => {
+  console.error(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "error",
+      workerId: WORKER_ID,
+      message: "worker_log_dir_init_failed",
+      error: String(error),
+    }),
+  );
+});
 
 log("info", "worker_started", {
   queueApi: QUEUE_API_BASE_URL,

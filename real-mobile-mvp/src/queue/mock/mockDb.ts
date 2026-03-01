@@ -6,6 +6,7 @@ export type MockDbV1 = {
   customer: {
     id: string;
     planActive: boolean;
+    walletBalance: number;
     createdAt: string;
     updatedAt: string;
   };

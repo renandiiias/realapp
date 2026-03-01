@@ -8,13 +8,21 @@ async function run() {
     throw new Error("DATABASE_URL não configurada.");
   }
 
-  const sqlPath = path.resolve(__dirname, "../sql/init.sql");
-  const sql = fs.readFileSync(sqlPath, "utf8");
+  const sqlDir = path.resolve(__dirname, "../sql");
+  const sqlFiles = fs
+    .readdirSync(sqlDir)
+    .filter((name) => name.endsWith(".sql"))
+    .sort((a, b) => a.localeCompare(b));
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   try {
     await pool.query("begin");
-    await pool.query(sql);
+    for (const fileName of sqlFiles) {
+      const sqlPath = path.join(sqlDir, fileName);
+      const sql = fs.readFileSync(sqlPath, "utf8");
+      await pool.query(sql);
+      console.log(`Migration aplicada: ${fileName}`);
+    }
     await pool.query("commit");
     console.log("Queue migration aplicada com sucesso.");
   } catch (error) {

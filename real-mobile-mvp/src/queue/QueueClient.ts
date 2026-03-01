@@ -14,6 +14,9 @@ export type UpdateOrderInput = Partial<Pick<Order, "title" | "summary" | "payloa
 export type SubmitResult = {
   orderId: string;
   status: Extract<OrderStatus, "queued" | "waiting_payment">;
+  waitingReason?: "missing_plan" | "insufficient_balance" | null;
+  walletBalance?: number;
+  requiredBalance?: number;
 };
 
 export type SetApprovalInput = {
@@ -35,6 +38,29 @@ export type QueueClient = {
   // Customer state (mock/payment simulation).
   getPlanActive(): Promise<boolean>;
   setPlanActive(active: boolean): Promise<void>;
+  getWallet(): Promise<{
+    planActive: boolean;
+    walletBalance: number;
+    currency: "BRL";
+    minTopup: number;
+    recommendedTopup: number;
+  }>;
+  createPixTopup(amount: number): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    pixCopyPaste: string;
+    qrCodeBase64?: string;
+    expiresAt?: string | null;
+  }>;
+  getTopupStatus(topupId: string): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    approvedAt?: string | null;
+    failureReason?: string | null;
+    expiresAt?: string | null;
+  }>;
 
   // Orders.
   createOrder(input: CreateOrderInput): Promise<Order>;
@@ -48,4 +74,7 @@ export type QueueClient = {
 
   // Approvals.
   setApproval(deliverableId: string, input: SetApprovalInput): Promise<void>;
+  pauseAdsPublication(orderId: string): Promise<void>;
+  resumeAdsPublication(orderId: string): Promise<void>;
+  stopAdsPublication(orderId: string): Promise<void>;
 };

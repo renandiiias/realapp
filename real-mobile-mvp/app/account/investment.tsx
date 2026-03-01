@@ -1,7 +1,7 @@
 import { router } from "expo-router";
-import { useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
-import { useAuth } from "../../src/auth/AuthProvider";
+import { useEffect, useMemo, useState } from "react";
+import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
 import { Button } from "../../src/ui/components/Button";
 import { Card } from "../../src/ui/components/Card";
@@ -21,35 +21,60 @@ function formatBRL(value: number): string {
 }
 
 export default function AccountInvestmentScreen() {
-  const auth = useAuth();
+  const queue = useQueue();
 
-  const [adMonthlyInvestmentInput, setAdMonthlyInvestmentInput] = useState(
-    typeof auth.companyProfile?.adMonthlyInvestment === "number" && auth.companyProfile.adMonthlyInvestment > 0
-      ? String(auth.companyProfile.adMonthlyInvestment)
-      : "",
-  );
   const [topUpInput, setTopUpInput] = useState("");
+  const [topupId, setTopupId] = useState<string | null>(null);
+  const [pixCopyPaste, setPixCopyPaste] = useState("");
+  const [topupStatus, setTopupStatus] = useState<"pending" | "approved" | "failed" | "expired" | null>(null);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [topupLoading, setTopupLoading] = useState(false);
 
-  const adPrepaidBalance = useMemo(
-    () => (typeof auth.companyProfile?.adPrepaidBalance === "number" ? auth.companyProfile.adPrepaidBalance : 0),
-    [auth.companyProfile?.adPrepaidBalance],
-  );
+  const adPrepaidBalance = useMemo(() => queue.walletBalance, [queue.walletBalance]);
+  const quickAmounts = useMemo(() => {
+    const list = [queue.recommendedTopup, 150, 300].filter((n) => n >= queue.minTopup);
+    return Array.from(new Set(list));
+  }, [queue.minTopup, queue.recommendedTopup]);
 
-  const saveAdBudget = async () => {
-    const parsed = parseMoney(adMonthlyInvestmentInput);
-    await auth.updateCompanyProfile({
-      adMonthlyInvestment: parsed ?? 0,
-    });
-  };
+  useEffect(() => {
+    if (!topupId || topupStatus !== "pending") return;
+    const id = setInterval(() => {
+      void (async () => {
+        try {
+          const status = await queue.getTopupStatus(topupId);
+          setTopupStatus(status.status);
+          if (status.status !== "pending") {
+            if (status.status === "approved") Alert.alert("Recarga confirmada", "Saldo atualizado com sucesso.");
+            clearInterval(id);
+          }
+        } catch {
+          // no-op
+        }
+      })();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [queue, topupId, topupStatus]);
 
   const quickTopUp = async (amount: number) => {
-    await auth.topUpAdPrepaidBalance(amount);
+    setTopupLoading(true);
+    try {
+      const topup = await queue.createPixTopup(amount);
+      setTopupId(topup.topupId);
+      setPixCopyPaste(topup.pixCopyPaste);
+      setTopupStatus(topup.status);
+      setExpiresAt(topup.expiresAt || null);
+    } finally {
+      setTopupLoading(false);
+    }
   };
 
   const customTopUp = async () => {
     const parsed = parseMoney(topUpInput);
-    if (!parsed) return;
-    await auth.topUpAdPrepaidBalance(parsed);
+    if (!parsed || parsed < queue.minTopup) {
+      Alert.alert("Valor inválido", `A recarga mínima é ${formatBRL(queue.minTopup)}.`);
+      return;
+    }
+    await quickTopUp(parsed);
     setTopUpInput("");
   };
 
@@ -63,30 +88,42 @@ export default function AccountInvestmentScreen() {
         </Card>
 
         <Card>
-          <SubTitle>Orçamento mensal (Meta)</SubTitle>
-          <Field
-            label="Valor mensal"
-            value={adMonthlyInvestmentInput}
-            onChangeText={setAdMonthlyInvestmentInput}
-            placeholder="Ex.: 1500"
-          />
-          <Button label="Salvar investimento" onPress={() => void saveAdBudget()} disabled={!parseMoney(adMonthlyInvestmentInput)} />
-        </Card>
-
-        <Card>
           <SubTitle>Saldo pré-pago</SubTitle>
           <View style={styles.balanceBox}>
             <Body style={styles.balanceLabel}>Disponível</Body>
             <SubTitle style={styles.balanceValue}>{formatBRL(adPrepaidBalance)}</SubTitle>
+            <Body style={styles.balanceLabel}>Mínimo para ativar anúncio: {formatBRL(queue.minTopup)}</Body>
+            <Body style={styles.balanceLabel}>Recomendado: {formatBRL(queue.recommendedTopup)}</Body>
           </View>
 
           <View style={styles.topUpRow}>
-            <Button label="Abastecer R$500" variant="secondary" onPress={() => void quickTopUp(500)} style={styles.topUpBtn} />
-            <Button label="Abastecer R$1000" variant="secondary" onPress={() => void quickTopUp(1000)} style={styles.topUpBtn} />
+            {quickAmounts.map((amount) => (
+              <Button
+                key={amount}
+                label={`Gerar PIX ${formatBRL(amount)}`}
+                variant="secondary"
+                onPress={() => void quickTopUp(amount)}
+                style={styles.topUpBtn}
+                disabled={topupLoading}
+              />
+            ))}
           </View>
 
-          <Field label="Valor custom" value={topUpInput} onChangeText={setTopUpInput} placeholder="Ex.: 750" />
-          <Button label="Abastecer agora" onPress={() => void customTopUp()} disabled={!parseMoney(topUpInput)} />
+          <Field label="Valor custom (mínimo R$30)" value={topUpInput} onChangeText={setTopUpInput} placeholder="Ex.: 120" />
+          <Button
+            label={topupLoading ? "Gerando PIX..." : "Gerar PIX custom"}
+            onPress={() => void customTopUp()}
+            disabled={!parseMoney(topUpInput) || topupLoading}
+          />
+
+          {pixCopyPaste ? (
+            <View style={styles.pixBox}>
+              <Body style={styles.balanceLabel}>PIX copia e cola</Body>
+              <Body style={styles.pixCode}>{pixCopyPaste}</Body>
+              <Body style={styles.balanceLabel}>Status: {topupStatus || "pending"}</Body>
+              {expiresAt ? <Body style={styles.balanceLabel}>Expira em: {expiresAt}</Body> : null}
+            </View>
+          ) : null}
 
           <Button label="Voltar" variant="secondary" onPress={() => router.back()} />
         </Card>
@@ -119,9 +156,26 @@ const styles = StyleSheet.create({
   },
   topUpRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
   },
   topUpBtn: {
-    flex: 1,
+    minWidth: "48%",
+    flexGrow: 1,
+  },
+  pixBox: {
+    borderWidth: 1,
+    borderColor: "rgba(205, 217, 238, 0.2)",
+    borderRadius: realTheme.radius.md,
+    backgroundColor: "rgba(9,12,18,0.4)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 6,
+  },
+  pixCode: {
+    color: realTheme.colors.text,
+    fontFamily: realTheme.fonts.bodyRegular,
+    fontSize: 12,
+    lineHeight: 16,
   },
 });

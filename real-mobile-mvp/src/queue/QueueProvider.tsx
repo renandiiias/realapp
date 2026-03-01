@@ -8,6 +8,10 @@ import { MockQueueClient } from "./MockQueueClient";
 type QueueCacheV1 = {
   version: 1;
   planActive: boolean;
+  walletBalance: number;
+  walletCurrency: "BRL";
+  minTopup: number;
+  recommendedTopup: number;
   orders: Order[];
   detailsById: Record<string, OrderDetail>;
   lastSyncAt: string | null;
@@ -18,6 +22,10 @@ const CACHE_KEY = "real:queue:cache:v1";
 const defaultCache: QueueCacheV1 = {
   version: 1,
   planActive: false,
+  walletBalance: 0,
+  walletCurrency: "BRL",
+  minTopup: 30,
+  recommendedTopup: 90,
   orders: [],
   detailsById: {},
   lastSyncAt: null,
@@ -28,12 +36,32 @@ type QueueContextValue = {
   loading: boolean;
   error: string | null;
   planActive: boolean;
+  walletBalance: number;
+  walletCurrency: "BRL";
+  minTopup: number;
+  recommendedTopup: number;
   orders: Order[];
   detailsById: Record<string, OrderDetail>;
   lastSyncAt: string | null;
 
   refresh(): Promise<void>;
   setPlanActive(active: boolean): Promise<void>;
+  createPixTopup(amount: number): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    pixCopyPaste: string;
+    qrCodeBase64?: string;
+    expiresAt?: string | null;
+  }>;
+  getTopupStatus(topupId: string): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    approvedAt?: string | null;
+    failureReason?: string | null;
+    expiresAt?: string | null;
+  }>;
 
   createOrder(input: CreateOrderInput): Promise<Order>;
   updateOrder(orderId: string, input: UpdateOrderInput): Promise<Order>;
@@ -42,6 +70,9 @@ type QueueContextValue = {
   listOrderAssets(orderId: string): Promise<OrderAsset[]>;
   postOrderInfo(orderId: string, message: string): Promise<void>;
   setApproval(deliverableId: string, input: SetApprovalInput): Promise<void>;
+  pauseAdsPublication(orderId: string): Promise<void>;
+  resumeAdsPublication(orderId: string): Promise<void>;
+  stopAdsPublication(orderId: string): Promise<void>;
 
   // Convenience selectors for screens.
   getOrder(orderId: string): OrderDetail | null;
@@ -102,6 +133,10 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [planActive, setPlanActiveState] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletCurrency, setWalletCurrency] = useState<"BRL">("BRL");
+  const [minTopup, setMinTopup] = useState(30);
+  const [recommendedTopup, setRecommendedTopup] = useState(90);
   const [orders, setOrders] = useState<Order[]>([]);
   const [detailsById, setDetailsById] = useState<Record<string, OrderDetail>>({});
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
@@ -109,6 +144,10 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
   const hydrate = useCallback(async () => {
     const cache = await loadCache();
     setPlanActiveState(cache.planActive);
+    setWalletBalance(cache.walletBalance ?? 0);
+    setWalletCurrency(cache.walletCurrency ?? "BRL");
+    setMinTopup(cache.minTopup ?? 30);
+    setRecommendedTopup(cache.recommendedTopup ?? 90);
     setOrders(cache.orders);
     setDetailsById(cache.detailsById);
     setLastSyncAt(cache.lastSyncAt);
@@ -131,7 +170,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      const [plan, list] = await Promise.all([client.getPlanActive(), client.listOrders()]);
+      const [wallet, list] = await Promise.all([client.getWallet(), client.listOrders()]);
       const details = await Promise.all(list.map((o) => client.getOrder(o.id)));
       const byId: Record<string, OrderDetail> = {};
       for (const d of details) byId[d.id] = d;
@@ -139,14 +178,22 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
       const now = new Date().toISOString();
       const cache: QueueCacheV1 = {
         version: 1,
-        planActive: plan,
+        planActive: wallet.planActive,
+        walletBalance: wallet.walletBalance,
+        walletCurrency: wallet.currency,
+        minTopup: wallet.minTopup,
+        recommendedTopup: wallet.recommendedTopup,
         orders: list,
         detailsById: byId,
         lastSyncAt: now,
       };
       await saveCache(cache);
 
-      setPlanActiveState(plan);
+      setPlanActiveState(wallet.planActive);
+      setWalletBalance(wallet.walletBalance);
+      setWalletCurrency(wallet.currency);
+      setMinTopup(wallet.minTopup);
+      setRecommendedTopup(wallet.recommendedTopup);
       setOrders(list);
       setDetailsById(byId);
       setLastSyncAt(now);
@@ -277,16 +324,64 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     [orders],
   );
 
+  const createPixTopup = useCallback(
+    async (amount: number) => {
+      const topup = await client.createPixTopup(amount);
+      await refresh();
+      return topup;
+    },
+    [client, refresh],
+  );
+
+  const getTopupStatus = useCallback(
+    async (topupId: string) => {
+      const status = await client.getTopupStatus(topupId);
+      await refresh();
+      return status;
+    },
+    [client, refresh],
+  );
+
+  const pauseAdsPublication = useCallback(
+    async (orderId: string) => {
+      await client.pauseAdsPublication(orderId);
+      await refresh();
+    },
+    [client, refresh],
+  );
+
+  const resumeAdsPublication = useCallback(
+    async (orderId: string) => {
+      await client.resumeAdsPublication(orderId);
+      await refresh();
+    },
+    [client, refresh],
+  );
+
+  const stopAdsPublication = useCallback(
+    async (orderId: string) => {
+      await client.stopAdsPublication(orderId);
+      await refresh();
+    },
+    [client, refresh],
+  );
+
   const value: QueueContextValue = {
     ready,
     loading,
     error,
     planActive,
+    walletBalance,
+    walletCurrency,
+    minTopup,
+    recommendedTopup,
     orders,
     detailsById,
     lastSyncAt,
     refresh,
     setPlanActive,
+    createPixTopup,
+    getTopupStatus,
     createOrder,
     updateOrder,
     submitOrder,
@@ -294,6 +389,9 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     listOrderAssets,
     postOrderInfo,
     setApproval,
+    pauseAdsPublication,
+    resumeAdsPublication,
+    stopAdsPublication,
     getOrder,
     listPendingApprovals,
     countByStatus,

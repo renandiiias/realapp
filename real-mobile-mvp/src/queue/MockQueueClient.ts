@@ -606,6 +606,7 @@ export class MockQueueClient implements QueueClient {
         customer: {
           id: customerId,
           planActive: false,
+          walletBalance: 0,
           createdAt: ts,
           updatedAt: ts,
         },
@@ -618,6 +619,10 @@ export class MockQueueClient implements QueueClient {
     });
     if (!db.assets) {
       db.assets = {};
+      await saveMockDb(db);
+    }
+    if (typeof db.customer.walletBalance !== "number") {
+      db.customer.walletBalance = 0;
       await saveMockDb(db);
     }
     return db;
@@ -657,6 +662,64 @@ export class MockQueueClient implements QueueClient {
     }
 
     await saveMockDb(db);
+  }
+
+  async getWallet(): Promise<{
+    planActive: boolean;
+    walletBalance: number;
+    currency: "BRL";
+    minTopup: number;
+    recommendedTopup: number;
+  }> {
+    const db = await this.load();
+    return {
+      planActive: db.customer.planActive,
+      walletBalance: Number((db.customer.walletBalance || 0).toFixed(2)),
+      currency: "BRL",
+      minTopup: 30,
+      recommendedTopup: 90,
+    };
+  }
+
+  async createPixTopup(amount: number): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    pixCopyPaste: string;
+    qrCodeBase64?: string;
+    expiresAt?: string | null;
+  }> {
+    const db = await this.load();
+    const now = this.now();
+    const topupId = uuidv4();
+    const safeAmount = Number(amount) >= 30 ? Number(amount) : 30;
+    db.customer.walletBalance = Number((db.customer.walletBalance + safeAmount).toFixed(2));
+    db.customer.updatedAt = iso(now);
+    await saveMockDb(db);
+    return {
+      topupId,
+      status: "approved",
+      amount: safeAmount,
+      pixCopyPaste: `0002012658REALAPPPIX${topupId.replace(/-/g, "").slice(0, 20)}`,
+      expiresAt: new Date(now.getTime() + 20 * 60 * 1000).toISOString(),
+    };
+  }
+
+  async getTopupStatus(topupId: string): Promise<{
+    topupId: string;
+    status: "pending" | "approved" | "failed" | "expired";
+    amount: number;
+    approvedAt?: string | null;
+    failureReason?: string | null;
+    expiresAt?: string | null;
+  }> {
+    return {
+      topupId,
+      status: "approved",
+      amount: 0,
+      approvedAt: this.now().toISOString(),
+      failureReason: null,
+    };
   }
 
   async createOrder(input: CreateOrderInput): Promise<Order> {
@@ -778,7 +841,9 @@ export class MockQueueClient implements QueueClient {
       return { orderId, status: order.status as SubmitResult["status"] };
     }
 
-    const status: SubmitResult["status"] = db.customer.planActive ? "queued" : "waiting_payment";
+    const requiredBalance = order.type === "ads" ? 30 : 0;
+    const hasEnoughBalance = db.customer.walletBalance >= requiredBalance;
+    const status: SubmitResult["status"] = db.customer.planActive && hasEnoughBalance ? "queued" : "waiting_payment";
     order.status = status;
     order.updatedAt = iso(now);
     if (status === "queued") {
@@ -803,7 +868,13 @@ export class MockQueueClient implements QueueClient {
     }
 
     await saveMockDb(db);
-    return { orderId, status };
+    return {
+      orderId,
+      status,
+      waitingReason: status === "waiting_payment" ? (!db.customer.planActive ? "missing_plan" : "insufficient_balance") : null,
+      walletBalance: db.customer.walletBalance,
+      requiredBalance,
+    };
   }
 
   async postOrderInfo(orderId: string, message: string): Promise<OrderDetail> {
@@ -886,6 +957,50 @@ export class MockQueueClient implements QueueClient {
 
     // Keep order in needs_approval; advance() will pick up changes/approval completion.
     advanceAll(db, now);
+    await saveMockDb(db);
+  }
+
+  async pauseAdsPublication(orderId: string): Promise<void> {
+    const db = await this.load();
+    const now = this.now();
+    const order = db.orders[orderId];
+    if (!order) throw new Error("order_not_found");
+    appendOrderEvent(db, now, {
+      orderId,
+      actor: "client",
+      message: "Campanha pausada pelo cliente.",
+      statusSnapshot: order.status,
+    });
+    await saveMockDb(db);
+  }
+
+  async resumeAdsPublication(orderId: string): Promise<void> {
+    const db = await this.load();
+    const now = this.now();
+    const order = db.orders[orderId];
+    if (!order) throw new Error("order_not_found");
+    appendOrderEvent(db, now, {
+      orderId,
+      actor: "client",
+      message: "Campanha retomada pelo cliente.",
+      statusSnapshot: order.status,
+    });
+    await saveMockDb(db);
+  }
+
+  async stopAdsPublication(orderId: string): Promise<void> {
+    const db = await this.load();
+    const now = this.now();
+    const order = db.orders[orderId];
+    if (!order) throw new Error("order_not_found");
+    order.status = "done";
+    order.updatedAt = iso(now);
+    appendOrderEvent(db, now, {
+      orderId,
+      actor: "client",
+      message: "Campanha encerrada pelo cliente.",
+      statusSnapshot: "done",
+    });
     await saveMockDb(db);
   }
 }

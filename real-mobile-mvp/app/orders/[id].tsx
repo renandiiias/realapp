@@ -161,6 +161,7 @@ export default function OrderDetailScreen() {
   const [feedbackByDeliverable, setFeedbackByDeliverable] = useState<Record<string, string>>({});
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [adsActionLoading, setAdsActionLoading] = useState<"pause" | "resume" | "stop" | null>(null);
 
   const timeline = useMemo(() => {
     if (!detail) return [];
@@ -216,6 +217,33 @@ export default function OrderDetailScreen() {
       return;
     }
     await queue.submitOrder(detail.id);
+  };
+
+  const pauseAds = async () => {
+    setAdsActionLoading("pause");
+    try {
+      await queue.pauseAdsPublication(detail.id);
+    } finally {
+      setAdsActionLoading(null);
+    }
+  };
+
+  const resumeAds = async () => {
+    setAdsActionLoading("resume");
+    try {
+      await queue.resumeAdsPublication(detail.id);
+    } finally {
+      setAdsActionLoading(null);
+    }
+  };
+
+  const stopAds = async () => {
+    setAdsActionLoading("stop");
+    try {
+      await queue.stopAdsPublication(detail.id);
+    } finally {
+      setAdsActionLoading(null);
+    }
   };
 
   const assertUrlReachable = async (videoUrl: string) => {
@@ -337,7 +365,32 @@ export default function OrderDetailScreen() {
 
           {detail.status === "waiting_payment" ? (
             <View style={styles.actions}>
-              <Button label="Já paguei (simular)" onPress={() => queue.setPlanActive(true)} style={styles.action} />
+              <Button label="Ir para recarga de saldo" onPress={() => router.push("/account/investment")} style={styles.action} />
+            </View>
+          ) : null}
+
+          {detail.type === "ads" && detail.adsPublication ? (
+            <View style={styles.actions}>
+              <Button
+                label={adsActionLoading === "pause" ? "Pausando..." : "Pausar"}
+                variant="secondary"
+                onPress={() => void pauseAds()}
+                style={styles.action}
+                disabled={adsActionLoading !== null}
+              />
+              <Button
+                label={adsActionLoading === "resume" ? "Retomando..." : "Retomar"}
+                variant="secondary"
+                onPress={() => void resumeAds()}
+                style={styles.action}
+                disabled={adsActionLoading !== null}
+              />
+              <Button
+                label={adsActionLoading === "stop" ? "Encerrando..." : "Encerrar"}
+                onPress={() => void stopAds()}
+                style={styles.action}
+                disabled={adsActionLoading !== null}
+              />
             </View>
           ) : null}
         </Card>

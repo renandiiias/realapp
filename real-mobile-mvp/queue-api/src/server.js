@@ -4,7 +4,7 @@ const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHmac, timingSafeEqual, randomUUID } = require("node:crypto");
 const { Pool } = require("pg");
 const { z } = require("zod");
 require("dotenv").config();
@@ -21,12 +21,22 @@ const WORKER_LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS || 120);
 const ASSET_STORAGE_DIR = process.env.ASSET_STORAGE_DIR || path.resolve(__dirname, "../storage/order-assets");
 const DEBUG_LOG_DIR = process.env.DEBUG_LOG_DIR || path.resolve(__dirname, "../storage/logs");
 const DEBUG_EVENTS_FILE = path.join(DEBUG_LOG_DIR, "client-events.jsonl");
+const BACKEND_EVENTS_FILE = path.join(DEBUG_LOG_DIR, "backend-events.jsonl");
 const INCIDENT_REPORT_DIR = path.join(DEBUG_LOG_DIR, "incidents");
 const ADS_DASHBOARD_CACHE_TTL_SECONDS = Number(process.env.ADS_DASHBOARD_CACHE_TTL_SECONDS || 300);
 const META_ACCESS_TOKEN = (process.env.META_ACCESS_TOKEN || "").trim();
 const META_AD_ACCOUNT_ID = (process.env.META_AD_ACCOUNT_ID || "").trim().replace(/^act_/, "");
 const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
 const META_API_BASE = "https://graph.facebook.com";
+const MERCADO_PAGO_API_BASE = "https://api.mercadopago.com";
+const MERCADO_PAGO_ACCESS_TOKEN = (process.env.MERCADO_PAGO_ACCESS_TOKEN || "").trim();
+const MERCADO_PAGO_WEBHOOK_SECRET = (process.env.MERCADO_PAGO_WEBHOOK_SECRET || "").trim();
+const MERCADO_PAGO_SUBSCRIPTION_PLAN_ID = (process.env.MERCADO_PAGO_SUBSCRIPTION_PLAN_ID || "").trim();
+const BILLING_CURRENCY = "BRL";
+const BILLING_MIN_TOPUP = 30;
+const BILLING_RECOMMENDED_TOPUP = 90;
+const ADS_MIN_REQUIRED_BALANCE = 30;
+const TOPUP_RECONCILIATION_BATCH_SIZE = Number(process.env.TOPUP_RECONCILIATION_BATCH_SIZE || 25);
 const SITE_BUILDER_API_BASE_URL = (process.env.SITE_BUILDER_API_BASE_URL || "http://localhost:3340").replace(/\/+$/, "");
 
 if (!DATABASE_URL) throw new Error("DATABASE_URL é obrigatória");
@@ -36,6 +46,7 @@ if (!OPS_API_KEY || !WORKER_API_KEY) throw new Error("OPS_API_KEY e WORKER_API_K
 const pool = new Pool({ connectionString: DATABASE_URL });
 const app = express();
 const incidentStateByFingerprint = new Map();
+let debugLogDirsReadyPromise = null;
 
 app.use(helmet());
 app.use(
@@ -44,10 +55,24 @@ app.use(
     methods: ["GET", "POST", "PATCH"],
   }),
 );
-app.use(express.json({ limit: "25mb" }));
+app.use(
+  express.json({
+    limit: "25mb",
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString("utf8");
+    },
+  }),
+);
 
 function log(level, message, meta = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), level, message, ...meta }));
+  const event = {
+    ts: new Date().toISOString(),
+    level,
+    message,
+    ...redactValue(meta, "meta"),
+  };
+  console.log(JSON.stringify(event));
+  void appendBackendLog(event);
 }
 
 const SENSITIVE_KEY_RE = /(token|authorization|password|cookie|secret|api[_-]?key)/i;
@@ -78,6 +103,32 @@ function redactValue(value, keyHint = "") {
 async function ensureDebugLogDirs() {
   await fs.mkdir(DEBUG_LOG_DIR, { recursive: true });
   await fs.mkdir(INCIDENT_REPORT_DIR, { recursive: true });
+}
+
+function ensureDebugLogDirsReady() {
+  if (!debugLogDirsReadyPromise) {
+    debugLogDirsReadyPromise = ensureDebugLogDirs().catch((error) => {
+      debugLogDirsReadyPromise = null;
+      throw error;
+    });
+  }
+  return debugLogDirsReadyPromise;
+}
+
+async function appendBackendLog(row) {
+  try {
+    await ensureDebugLogDirsReady();
+    await fs.appendFile(BACKEND_EVENTS_FILE, `${JSON.stringify(redactValue(row, "log"))}\n`, "utf8");
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "error",
+        message: "backend_log_append_failed",
+        error: String(error),
+      }),
+    );
+  }
 }
 
 function sanitizeFingerprint(input) {
@@ -211,7 +262,7 @@ const opsStatusSchema = z.object({
 });
 
 const completeSchema = z.object({
-  status: z.enum(["done", "needs_approval", "needs_info", "failed", "blocked", "queued", "in_progress"]),
+  status: z.enum(["done", "needs_approval", "needs_info", "failed", "blocked", "queued", "in_progress", "waiting_payment"]),
   message: z.string().max(1000).optional(),
 });
 
@@ -238,6 +289,14 @@ const deliverablesSchema = z.object({
 
 const entitlementSchema = z.object({
   planActive: z.boolean(),
+});
+
+const createPixTopupSchema = z.object({
+  amount: z.number().min(BILLING_MIN_TOPUP).max(50000),
+});
+
+const adsPublicationActionSchema = z.object({
+  action: z.enum(["pause", "resume", "stop"]),
 });
 
 const claimSchema = z.object({
@@ -983,6 +1042,269 @@ async function getPlanActive(client, customerId) {
   return Boolean(res.rows[0].plan_active);
 }
 
+function parseMoney(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Number(n.toFixed(2));
+}
+
+function normalizeTopupStatus(input) {
+  const status = String(input || "").toLowerCase();
+  if (status === "approved") return "approved";
+  if (status === "rejected" || status === "cancelled" || status === "cancelled_by_user") return "failed";
+  if (status === "in_process" || status === "pending") return "pending";
+  return "pending";
+}
+
+function mapPreapprovalToPlanActive(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "authorized") return true;
+  return false;
+}
+
+function mapPreapprovalStatus(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "authorized") return "active";
+  if (normalized === "paused" || normalized === "cancelled") return "canceled";
+  if (normalized === "pending") return "past_due";
+  return "inactive";
+}
+
+function parseMercadoPagoSignature(headerRaw) {
+  const out = {};
+  const raw = String(headerRaw || "");
+  for (const part of raw.split(",")) {
+    const [key, value] = part.split("=");
+    if (!key || !value) continue;
+    out[key.trim()] = value.trim();
+  }
+  return out;
+}
+
+function verifyMercadoPagoWebhookSignature(req) {
+  if (!MERCADO_PAGO_WEBHOOK_SECRET) return true;
+  const signatureHeader = req.header("x-signature");
+  const parsed = parseMercadoPagoSignature(signatureHeader);
+  const expected = createHmac("sha256", MERCADO_PAGO_WEBHOOK_SECRET)
+    .update(String(req.rawBody || ""))
+    .digest("hex");
+  const provided = String(parsed.v1 || "");
+  if (!provided || expected.length !== provided.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
+}
+
+async function ensureWalletAccount(client, customerId) {
+  await client.query(
+    `insert into wallet_accounts (customer_id, balance_brl)
+     values ($1, 0)
+     on conflict (customer_id) do nothing`,
+    [customerId],
+  );
+}
+
+async function getWalletBalance(client, customerId) {
+  await ensureWalletAccount(client, customerId);
+  const row = await client.query(`select balance_brl from wallet_accounts where customer_id = $1`, [customerId]);
+  return parseMoney(row.rows[0]?.balance_brl);
+}
+
+function estimatedRequiredBalance(order) {
+  if (order?.type === "ads") return ADS_MIN_REQUIRED_BALANCE;
+  return 0;
+}
+
+async function mercadoPagoApi(pathname, { method = "GET", body, idempotencyKey } = {}) {
+  if (!MERCADO_PAGO_ACCESS_TOKEN) {
+    throw new Error("mercadopago_access_token_missing");
+  }
+  const url = `${MERCADO_PAGO_API_BASE}${pathname}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      authorization: `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`,
+      "content-type": "application/json",
+      ...(idempotencyKey ? { "x-idempotency-key": idempotencyKey } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const raw = await response.text();
+  const data = safeJson(raw);
+  if (!response.ok) {
+    const err = new Error(`mercadopago_http_${response.status}`);
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+async function createPixTopupPayment({ customerId, amount, payerEmail }) {
+  const body = {
+    transaction_amount: parseMoney(amount),
+    description: `Recarga de saldo RealApp (${customerId})`,
+    payment_method_id: "pix",
+    payer: {
+      email: payerEmail || "cliente@realapp.local",
+    },
+  };
+  const response = await mercadoPagoApi("/v1/payments", {
+    method: "POST",
+    body,
+    idempotencyKey: randomUUID(),
+  });
+  return {
+    paymentId: String(response.id || ""),
+    status: normalizeTopupStatus(response.status),
+    pixCopyPaste: String(response?.point_of_interaction?.transaction_data?.qr_code || ""),
+    qrCodeBase64: String(response?.point_of_interaction?.transaction_data?.qr_code_base64 || ""),
+    expiresAt: response?.date_of_expiration ? String(response.date_of_expiration) : null,
+    raw: response,
+  };
+}
+
+async function fetchPaymentStatus(paymentId) {
+  const response = await mercadoPagoApi(`/v1/payments/${encodeURIComponent(paymentId)}`, { method: "GET" });
+  return {
+    status: normalizeTopupStatus(response.status),
+    approvedAt: response?.date_approved ? String(response.date_approved) : null,
+    failureReason: response?.status_detail ? String(response.status_detail) : null,
+    raw: response,
+  };
+}
+
+async function creditWalletForTopup(client, topupRow, paymentSnapshot) {
+  const topupId = topupRow.id;
+  const customerId = topupRow.customer_id;
+  const amount = parseMoney(topupRow.amount_brl);
+  const lock = await client.query(`select * from billing_topups where id = $1 for update`, [topupId]);
+  const current = lock.rows[0];
+  if (!current || current.status === "approved") return current;
+
+  await ensureWalletAccount(client, customerId);
+  await client.query(
+    `update wallet_accounts set balance_brl = balance_brl + $2 where customer_id = $1`,
+    [customerId, amount],
+  );
+  await client.query(
+    `insert into wallet_ledger (id, customer_id, entry_type, amount_brl, reference_type, reference_id, metadata)
+     values ($1, $2, 'topup_credit', $3, 'topup', $4, $5::jsonb)`,
+    [randomUUID(), customerId, amount, topupId, JSON.stringify({ provider: "mercadopago" })],
+  );
+  await client.query(
+    `update billing_topups
+     set status = 'approved',
+         approved_at = now(),
+         failure_reason = null,
+         raw_payload = $2::jsonb,
+         updated_at = now()
+     where id = $1`,
+    [topupId, JSON.stringify(paymentSnapshot.raw || {})],
+  );
+  log("info", "billing_topup_approved", { customerId, topupId, amountBrl: amount });
+  return { ...current, status: "approved" };
+}
+
+async function markTopupFailed(client, topupId, failureReason, rawPayload = {}) {
+  await client.query(
+    `update billing_topups
+     set status = 'failed',
+         failure_reason = $2,
+         raw_payload = $3::jsonb,
+         updated_at = now()
+     where id = $1 and status <> 'approved'`,
+    [topupId, String(failureReason || "payment_failed").slice(0, 500), JSON.stringify(rawPayload || {})],
+  );
+}
+
+async function reconcilePendingTopups(client, { limit = TOPUP_RECONCILIATION_BATCH_SIZE } = {}) {
+  const pending = await client.query(
+    `select * from billing_topups
+     where status = 'pending' and provider = 'mercadopago' and provider_payment_id is not null
+     order by created_at asc
+     limit $1`,
+    [Math.max(1, Number(limit) || TOPUP_RECONCILIATION_BATCH_SIZE)],
+  );
+  let approved = 0;
+  let failed = 0;
+  for (const row of pending.rows) {
+    const paymentId = String(row.provider_payment_id || "");
+    if (!paymentId) continue;
+    try {
+      const payment = await fetchPaymentStatus(paymentId);
+      if (payment.status === "approved") {
+        await creditWalletForTopup(client, row, payment);
+        approved += 1;
+      } else if (payment.status === "failed") {
+        await markTopupFailed(client, row.id, payment.failureReason || "payment_failed", payment.raw);
+        failed += 1;
+      }
+    } catch (error) {
+      log("warn", "billing_topup_reconcile_failed", { topupId: row.id, error: String(error) });
+    }
+  }
+  return { scanned: pending.rowCount, approved, failed };
+}
+
+async function updateSubscriptionFromWebhook(client, payload) {
+  const customerId = String(payload?.external_reference || "").trim();
+  if (!customerId) return;
+  const preapprovalId = String(payload?.id || payload?.preapproval_id || "").trim();
+  const statusRaw = String(payload?.status || "").trim();
+  const currentPeriodEnd = payload?.next_payment_date ? new Date(payload.next_payment_date) : null;
+  const subStatus = mapPreapprovalStatus(statusRaw);
+  const planActive = mapPreapprovalToPlanActive(statusRaw);
+
+  await client.query(
+    `insert into billing_subscriptions (customer_id, status, provider_preapproval_id, plan_id, current_period_end, raw_payload)
+     values ($1, $2, $3, $4, $5, $6::jsonb)
+     on conflict (customer_id)
+     do update set
+       status = excluded.status,
+       provider_preapproval_id = excluded.provider_preapproval_id,
+       plan_id = excluded.plan_id,
+       current_period_end = excluded.current_period_end,
+       raw_payload = excluded.raw_payload,
+       updated_at = now()`,
+    [
+      customerId,
+      subStatus,
+      preapprovalId || null,
+      String(payload?.preapproval_plan_id || MERCADO_PAGO_SUBSCRIPTION_PLAN_ID || "").trim() || null,
+      currentPeriodEnd,
+      JSON.stringify(payload || {}),
+    ],
+  );
+  await client.query(
+    `insert into entitlements (customer_id, plan_active)
+     values ($1, $2)
+     on conflict (customer_id)
+     do update set plan_active = excluded.plan_active, updated_at = now()`,
+    [customerId, planActive],
+  );
+}
+
+async function metaPost(apiPath, body = {}) {
+  const url = new URL(`${META_API_BASE}/${META_GRAPH_VERSION}/${String(apiPath).replace(/^\/+/, "")}`);
+  const payload = new URLSearchParams();
+  payload.set("access_token", META_ACCESS_TOKEN);
+  for (const [key, value] of Object.entries(body || {})) {
+    if (value === undefined || value === null) continue;
+    payload.set(key, String(value));
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: payload.toString(),
+  });
+  const raw = await response.text();
+  const data = safeJson(raw);
+  if (!response.ok) {
+    const err = new Error(`meta_http_${response.status}`);
+    err.meta = data;
+    throw err;
+  }
+  return data;
+}
+
 app.get("/health", async (_req, res) => {
   try {
     await pool.query("select 1");
@@ -998,6 +1320,57 @@ app.get("/ready", async (_req, res) => {
     return res.json({ ready: true });
   } catch {
     return res.status(500).json({ ready: false });
+  }
+});
+
+app.post("/webhook/mercadopago", async (req, res) => {
+  if (!verifyMercadoPagoWebhookSignature(req)) {
+    log("warn", "mercadopago_webhook_signature_invalid");
+    return res.status(401).json({ error: "Assinatura inválida." });
+  }
+
+  const topic = String(req.query.topic || req.body?.type || "").toLowerCase();
+  const paymentId =
+    String(req.query["data.id"] || req.body?.data?.id || req.body?.id || "").trim() ||
+    String(req.body?.resource?.id || "").trim();
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    if (topic.includes("payment") && paymentId) {
+      const topup = await client.query(
+        `select * from billing_topups
+         where provider = 'mercadopago' and provider_payment_id = $1
+         limit 1 for update`,
+        [paymentId],
+      );
+      if (topup.rowCount > 0) {
+        const payment = await fetchPaymentStatus(paymentId);
+        if (payment.status === "approved") {
+          await creditWalletForTopup(client, topup.rows[0], payment);
+        } else if (payment.status === "failed") {
+          await markTopupFailed(client, topup.rows[0].id, payment.failureReason || "payment_failed", payment.raw);
+        }
+      }
+    }
+
+    if (topic.includes("preapproval")) {
+      const preapprovalId = String(req.body?.data?.id || req.body?.id || "").trim();
+      const preapprovalPayload =
+        preapprovalId && req.body?.data && req.body?.type
+          ? await mercadoPagoApi(`/preapproval/${encodeURIComponent(preapprovalId)}`)
+          : req.body || {};
+      await updateSubscriptionFromWebhook(client, preapprovalPayload);
+    }
+
+    await client.query("commit");
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    await client.query("rollback");
+    log("error", "mercadopago_webhook_failed", { error: String(error) });
+    return res.status(500).json({ error: "Falha no webhook." });
+  } finally {
+    client.release();
   }
 });
 
@@ -1081,6 +1454,119 @@ app.post("/v1/entitlements/me", async (req, res) => {
       [customerId, parsed.data.planActive],
     );
     return res.json({ planActive: parsed.data.planActive });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/v1/billing/wallet", async (req, res) => {
+  const customerId = req.user.id;
+  const client = await pool.connect();
+  try {
+    const planActive = await getPlanActive(client, customerId);
+    const walletBalance = await getWalletBalance(client, customerId);
+    return res.json({
+      planActive,
+      walletBalance,
+      currency: BILLING_CURRENCY,
+      minTopup: BILLING_MIN_TOPUP,
+      recommendedTopup: BILLING_RECOMMENDED_TOPUP,
+    });
+  } catch (error) {
+    log("error", "billing_wallet_failed", { customerId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao carregar carteira." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/billing/topups/pix", async (req, res) => {
+  const parsed = createPixTopupSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+
+  const customerId = req.user.id;
+  const payerEmail = req.user.email;
+  const amount = parseMoney(parsed.data.amount);
+  const client = await pool.connect();
+  try {
+    const pix = await createPixTopupPayment({ customerId, amount, payerEmail });
+    if (!pix.paymentId || !pix.pixCopyPaste) {
+      return res.status(502).json({ error: "Falha ao gerar PIX no provedor." });
+    }
+
+    const topupId = randomUUID();
+    await client.query(
+      `insert into billing_topups (
+        id, customer_id, amount_brl, status, provider, provider_payment_id, pix_copy_paste, qr_code_base64, expires_at, raw_payload
+      )
+      values ($1, $2, $3, $4, 'mercadopago', $5, $6, $7, $8, $9::jsonb)`,
+      [
+        topupId,
+        customerId,
+        amount,
+        pix.status,
+        pix.paymentId,
+        pix.pixCopyPaste,
+        pix.qrCodeBase64 || null,
+        pix.expiresAt ? new Date(pix.expiresAt) : null,
+        JSON.stringify(pix.raw || {}),
+      ],
+    );
+    log("info", "billing_topup_created", { customerId, topupId, amountBrl: amount });
+    return res.status(201).json({
+      topupId,
+      status: pix.status,
+      amount,
+      pixCopyPaste: pix.pixCopyPaste,
+      qrCodeBase64: pix.qrCodeBase64 || undefined,
+      expiresAt: pix.expiresAt,
+    });
+  } catch (error) {
+    log("error", "billing_topup_create_failed", { customerId, amount, error: String(error) });
+    return res.status(500).json({ error: "Falha ao criar recarga PIX." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/v1/billing/topups/:topupId", async (req, res) => {
+  const topupId = req.params.topupId;
+  const customerId = req.user.id;
+  const client = await pool.connect();
+  try {
+    const row = await client.query(`select * from billing_topups where id = $1 and customer_id = $2 limit 1`, [topupId, customerId]);
+    if (row.rowCount === 0) return res.status(404).json({ error: "Recarga não encontrada." });
+
+    const topup = row.rows[0];
+    if (topup.status === "pending" && topup.provider === "mercadopago" && topup.provider_payment_id) {
+      try {
+        const payment = await fetchPaymentStatus(String(topup.provider_payment_id));
+        await client.query("begin");
+        if (payment.status === "approved") {
+          await creditWalletForTopup(client, topup, payment);
+        } else if (payment.status === "failed") {
+          await markTopupFailed(client, topup.id, payment.failureReason || "payment_failed", payment.raw);
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => {});
+        log("warn", "billing_topup_status_refresh_failed", { topupId, error: String(error) });
+      }
+    }
+
+    const refreshed = await client.query(`select * from billing_topups where id = $1 and customer_id = $2 limit 1`, [topupId, customerId]);
+    const current = refreshed.rows[0];
+    return res.json({
+      topupId: current.id,
+      status: current.status,
+      amount: parseMoney(current.amount_brl),
+      approvedAt: current.approved_at ? current.approved_at.toISOString() : null,
+      failureReason: current.failure_reason || null,
+      expiresAt: current.expires_at ? current.expires_at.toISOString() : null,
+    });
+  } catch (error) {
+    log("error", "billing_topup_get_failed", { topupId, customerId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao consultar recarga." });
   } finally {
     client.release();
   }
@@ -1549,20 +2035,30 @@ app.post("/v1/orders/:id/submit", async (req, res) => {
     }
 
     const planActive = await getPlanActive(client, customerId);
-    const nextStatus = planActive ? "queued" : "waiting_payment";
+    const requiredBalance = estimatedRequiredBalance(order.rows[0]);
+    const walletBalance = await getWalletBalance(client, customerId);
+    const hasEnoughBalance = walletBalance >= requiredBalance;
+    const canQueue = planActive && hasEnoughBalance;
+    const nextStatus = canQueue ? "queued" : "waiting_payment";
+
+    let waitingReason = null;
+    if (!planActive) waitingReason = "missing_plan";
+    else if (!hasEnoughBalance) waitingReason = "insufficient_balance";
 
     await client.query(`update orders set status = $1 where id = $2`, [nextStatus, orderId]);
     await appendEvent(client, {
       orderId,
       actor: "client",
-      message: planActive
+      message: canQueue
         ? "Pedido enviado e pronto para execução."
-        : "Pedido enviado. Aguarda ativação do plano para entrar na fila.",
+        : waitingReason === "missing_plan"
+          ? "Pedido enviado. Aguarda ativação da assinatura para entrar na fila."
+          : `Pedido enviado. Saldo insuficiente para iniciar anúncio (mínimo ${BILLING_CURRENCY} ${requiredBalance.toFixed(2)}).`,
       statusSnapshot: nextStatus,
     });
 
     await client.query("commit");
-    return res.json({ orderId, status: nextStatus });
+    return res.json({ orderId, status: nextStatus, waitingReason, walletBalance, requiredBalance });
   } catch (error) {
     await client.query("rollback");
     log("error", "order_submit_failed", { orderId, error: String(error) });
@@ -1689,7 +2185,125 @@ app.post("/v1/approvals/:deliverableId", async (req, res) => {
   }
 });
 
+async function runAdsPublicationAction({ customerId, orderId, action }) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const row = await client.query(
+      `select ap.*, o.id as order_id
+       from ads_publications ap
+       join orders o on o.id = ap.order_id
+       where ap.order_id = $1 and o.customer_id = $2
+       limit 1
+       for update`,
+      [orderId, customerId],
+    );
+    if (row.rowCount === 0) {
+      await client.query("rollback");
+      return { status: 404, body: { error: "Publicação de anúncio não encontrada." } };
+    }
+    const publication = row.rows[0];
+    if (publication.status === "ended" && action !== "stop") {
+      await client.query("rollback");
+      return { status: 409, body: { error: "campaign_already_stopped" } };
+    }
+    if (!publication.meta_campaign_id) {
+      await client.query("rollback");
+      return { status: 400, body: { error: "Campanha Meta não vinculada ao pedido." } };
+    }
+    if (!isMetaConfigured()) {
+      await client.query("rollback");
+      return { status: 503, body: { error: "Credenciais Meta não configuradas." } };
+    }
+
+    const targetStatus = action === "resume" ? "ACTIVE" : "PAUSED";
+    await metaPost(`${publication.meta_campaign_id}`, { status: targetStatus });
+    if (publication.meta_adset_id) await metaPost(`${publication.meta_adset_id}`, { status: targetStatus });
+    if (publication.meta_ad_id) await metaPost(`${publication.meta_ad_id}`, { status: targetStatus });
+
+    const localStatus = action === "stop" ? "ended" : action === "resume" ? "active" : "paused";
+    await client.query(
+      `update ads_publications
+       set status = $2, last_sync_at = now(), updated_at = now()
+       where order_id = $1`,
+      [orderId, localStatus],
+    );
+    await appendEvent(client, {
+      orderId,
+      actor: "client",
+      message:
+        action === "pause"
+          ? "Cliente pausou a campanha."
+          : action === "resume"
+            ? "Cliente retomou a campanha."
+            : "Cliente encerrou a campanha.",
+      statusSnapshot: action === "stop" ? "done" : undefined,
+    });
+    if (action === "stop") {
+      await client.query(`update orders set status = 'done' where id = $1`, [orderId]);
+    }
+    log(
+      "info",
+      action === "pause" ? "campaign_paused" : action === "resume" ? "campaign_resumed" : "campaign_stopped",
+      {
+        customerId,
+        orderId,
+        metaCampaignId: publication.meta_campaign_id,
+        metaAdsetId: publication.meta_adset_id,
+        metaAdId: publication.meta_ad_id,
+        status: localStatus,
+      },
+    );
+    await client.query("commit");
+    return { status: 200, body: { ok: true, action, status: localStatus } };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    log("error", "ads_publication_action_failed", { customerId, orderId, action, error: String(error) });
+    return { status: 500, body: { error: "Falha ao atualizar campanha." } };
+  } finally {
+    client.release();
+  }
+}
+
+app.post("/v1/ads/publications/:orderId/pause", async (req, res) => {
+  const result = await runAdsPublicationAction({
+    customerId: req.user.id,
+    orderId: req.params.orderId,
+    action: "pause",
+  });
+  return res.status(result.status).json(result.body);
+});
+
+app.post("/v1/ads/publications/:orderId/resume", async (req, res) => {
+  const result = await runAdsPublicationAction({
+    customerId: req.user.id,
+    orderId: req.params.orderId,
+    action: "resume",
+  });
+  return res.status(result.status).json(result.body);
+});
+
+app.post("/v1/ads/publications/:orderId/stop", async (req, res) => {
+  const result = await runAdsPublicationAction({
+    customerId: req.user.id,
+    orderId: req.params.orderId,
+    action: "stop",
+  });
+  return res.status(result.status).json(result.body);
+});
+
 app.use("/v1/ops", authOpsWorker);
+
+void ensureDebugLogDirsReady().catch((error) => {
+  console.error(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "error",
+      message: "debug_log_dir_init_failed",
+      error: String(error),
+    }),
+  );
+});
 
 app.get("/v1/ops/orders", requireRole(["ops", "worker"]), async (req, res) => {
   const { status, customerId } = req.query;
@@ -1951,6 +2565,126 @@ app.post("/v1/ops/orders/:id/ads-publication", requireRole(["worker", "ops"]), a
     await client.query("rollback");
     log("error", "ops_ads_publication_failed", { orderId, error: String(error) });
     return res.status(500).json({ error: "Falha ao salvar publicação de anúncio." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/ops/orders/:id/debit-ads-budget", requireRole(["worker", "ops"]), async (req, res) => {
+  const orderId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const orderRes = await client.query(`select * from orders where id = $1 for update`, [orderId]);
+    if (orderRes.rowCount === 0) {
+      await client.query("rollback");
+      return res.status(404).json({ error: "Pedido não encontrado." });
+    }
+
+    const order = orderRes.rows[0];
+    const customerId = order.customer_id;
+    const required = estimatedRequiredBalance(order);
+    if (required <= 0) {
+      await client.query("commit");
+      return res.json({ ok: true, skipped: true, requiredBalance: 0 });
+    }
+
+    const existingDebit = await client.query(
+      `select id from wallet_ledger
+       where reference_type = 'order' and reference_id = $1 and entry_type = 'ad_debit'
+       limit 1`,
+      [orderId],
+    );
+    if (existingDebit.rowCount > 0) {
+      const balance = await getWalletBalance(client, customerId);
+      await client.query("commit");
+      return res.json({
+        ok: true,
+        alreadyDebited: true,
+        requiredBalance: required,
+        walletBalance: balance,
+      });
+    }
+
+    const planActive = await getPlanActive(client, customerId);
+    if (!planActive) {
+      await client.query(`update orders set status = 'waiting_payment' where id = $1`, [orderId]);
+      await appendEvent(client, {
+        orderId,
+        actor: "codex",
+        message: "Assinatura inativa. Pedido voltou para aguardando pagamento.",
+        statusSnapshot: "waiting_payment",
+      });
+      await client.query("commit");
+      return res.status(409).json({ error: "missing_plan", requiredBalance: required });
+    }
+
+    await ensureWalletAccount(client, customerId);
+    const wallet = await client.query(`select balance_brl from wallet_accounts where customer_id = $1 for update`, [customerId]);
+    const currentBalance = parseMoney(wallet.rows[0]?.balance_brl);
+    if (currentBalance < required) {
+      await client.query(`update orders set status = 'waiting_payment' where id = $1`, [orderId]);
+      await appendEvent(client, {
+        orderId,
+        actor: "codex",
+        message: `Saldo insuficiente para publicar anúncio. Mínimo: ${BILLING_CURRENCY} ${required.toFixed(2)}.`,
+        statusSnapshot: "waiting_payment",
+      });
+      await client.query("commit");
+      return res.status(409).json({
+        error: "insufficient_balance",
+        walletBalance: currentBalance,
+        requiredBalance: required,
+      });
+    }
+
+    const nextBalance = parseMoney(currentBalance - required);
+    await client.query(
+      `update wallet_accounts
+       set balance_brl = $2, updated_at = now()
+       where customer_id = $1`,
+      [customerId, nextBalance],
+    );
+    await client.query(
+      `insert into wallet_ledger (id, customer_id, entry_type, amount_brl, reference_type, reference_id, metadata)
+       values ($1, $2, 'ad_debit', $3, 'order', $4, $5::jsonb)`,
+      [randomUUID(), customerId, -required, orderId, JSON.stringify({ reason: "ads_publish_start" })],
+    );
+    await appendEvent(client, {
+      orderId,
+      actor: "codex",
+      message: `Saldo debitado para publicação: ${BILLING_CURRENCY} ${required.toFixed(2)}.`,
+      statusSnapshot: "in_progress",
+    });
+    log("info", "wallet_debited", { customerId, orderId, amountBrl: required, balanceAfter: nextBalance });
+    await client.query("commit");
+    return res.json({
+      ok: true,
+      walletBalance: nextBalance,
+      requiredBalance: required,
+    });
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    log("error", "ops_debit_ads_budget_failed", { orderId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao debitar saldo do anúncio." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/ops/billing/topups/reconcile", requireRole(["worker", "ops"]), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const result = await reconcilePendingTopups(client, {
+      limit: Number(req.body?.limit || TOPUP_RECONCILIATION_BATCH_SIZE),
+    });
+    await client.query("commit");
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    log("error", "billing_reconcile_failed", { error: String(error) });
+    return res.status(500).json({ error: "Falha na conciliação de recargas." });
   } finally {
     client.release();
   }
