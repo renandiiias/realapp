@@ -48,13 +48,23 @@ create unique index if not exists uq_billing_topups_provider_payment_id on billi
 create unique index if not exists uq_wallet_ledger_order_debit on wallet_ledger(reference_type, reference_id, entry_type)
   where reference_type = 'order' and entry_type = 'ad_debit';
 
-create or replace function set_updated_at()
-returns trigger as $$
+do $$
 begin
-  new.updated_at = now();
-  return new;
+  if not exists (
+    select 1
+    from pg_proc
+    where proname = 'set_updated_at'
+  ) then
+    create function set_updated_at()
+    returns trigger as $f$
+    begin
+      new.updated_at = now();
+      return new;
+    end;
+    $f$ language plpgsql;
+  end if;
 end;
-$$ language plpgsql;
+$$;
 
 drop trigger if exists trg_wallet_accounts_updated_at on wallet_accounts;
 create trigger trg_wallet_accounts_updated_at before update on wallet_accounts for each row execute function set_updated_at();
