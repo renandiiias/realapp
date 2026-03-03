@@ -22,7 +22,11 @@
         "backgroundColor": "#0B0C0E"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.anonymous.realmobilemvp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -38,6 +42,13 @@
           "microphonePermission": "Permita acesso ao microfone para gravar vídeo com áudio."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "9f4cd22e-acff-46b3-98fb-c8d00c7e60df"
+      }
+    },
+    "owner": "renandiiias"
   }
 }
