@@ -1165,14 +1165,27 @@ async function createPixTopupPayment({ customerId, amount, payerEmail }) {
   };
 }
 
-async function createSubscriptionCheckout() {
+async function createSubscriptionCheckout({ customerId, payerEmail, returnUrl }) {
   const response = await mercadoPagoApi(`/preapproval_plan/${encodeURIComponent(MERCADO_PAGO_SUBSCRIPTION_PLAN_ID)}`, {
     method: "GET",
   });
+  const baseCheckoutUrl = String(response?.init_point || "");
+  let checkoutUrl = baseCheckoutUrl;
+  if (baseCheckoutUrl) {
+    try {
+      const url = new URL(baseCheckoutUrl);
+      url.searchParams.set("external_reference", customerId);
+      if (payerEmail) url.searchParams.set("payer_email", payerEmail);
+      if (returnUrl) url.searchParams.set("back_url", returnUrl);
+      checkoutUrl = url.toString();
+    } catch {
+      checkoutUrl = baseCheckoutUrl;
+    }
+  }
   return {
     preapprovalId: null,
     status: "pending",
-    checkoutUrl: String(response?.init_point || ""),
+    checkoutUrl,
     raw: response,
   };
 }
@@ -1505,6 +1518,7 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
 
   const customerId = req.user.id;
   const payerEmail = req.user.email;
+  const returnUrl = parsed.data.returnUrl || process.env.MERCADO_PAGO_SUBSCRIPTION_RETURN_URL || undefined;
   const client = await pool.connect();
   try {
     const existing = await client.query(`select * from billing_subscriptions where customer_id = $1 limit 1`, [customerId]);
@@ -1519,7 +1533,7 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
       });
     }
 
-    const checkout = await createSubscriptionCheckout();
+    const checkout = await createSubscriptionCheckout({ customerId, payerEmail, returnUrl });
     if (!checkout.checkoutUrl) {
       return res.status(502).json({ error: "Falha ao criar checkout de assinatura." });
     }
