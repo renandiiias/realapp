@@ -1165,22 +1165,13 @@ async function createPixTopupPayment({ customerId, amount, payerEmail }) {
   };
 }
 
-async function createSubscriptionCheckout({ customerId, payerEmail, returnUrl }) {
-  const body = {
-    preapproval_plan_id: MERCADO_PAGO_SUBSCRIPTION_PLAN_ID,
-    reason: "Assinatura RealApp Pro",
-    external_reference: customerId,
-    payer_email: payerEmail || "cliente@realapp.local",
-    ...(returnUrl ? { back_url: returnUrl } : {}),
-  };
-  const response = await mercadoPagoApi("/preapproval", {
-    method: "POST",
-    body,
-    idempotencyKey: randomUUID(),
+async function createSubscriptionCheckout() {
+  const response = await mercadoPagoApi(`/preapproval_plan/${encodeURIComponent(MERCADO_PAGO_SUBSCRIPTION_PLAN_ID)}`, {
+    method: "GET",
   });
   return {
-    preapprovalId: String(response?.id || ""),
-    status: String(response?.status || "pending").toLowerCase(),
+    preapprovalId: null,
+    status: "pending",
     checkoutUrl: String(response?.init_point || ""),
     raw: response,
   };
@@ -1514,7 +1505,6 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
 
   const customerId = req.user.id;
   const payerEmail = req.user.email;
-  const returnUrl = parsed.data.returnUrl || process.env.MERCADO_PAGO_SUBSCRIPTION_RETURN_URL || undefined;
   const client = await pool.connect();
   try {
     const existing = await client.query(`select * from billing_subscriptions where customer_id = $1 limit 1`, [customerId]);
@@ -1529,8 +1519,8 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
       });
     }
 
-    const checkout = await createSubscriptionCheckout({ customerId, payerEmail, returnUrl });
-    if (!checkout.preapprovalId || !checkout.checkoutUrl) {
+    const checkout = await createSubscriptionCheckout();
+    if (!checkout.checkoutUrl) {
       return res.status(502).json({ error: "Falha ao criar checkout de assinatura." });
     }
 
@@ -1549,7 +1539,7 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
       [
         customerId,
         subscriptionStatus,
-        checkout.preapprovalId,
+        null,
         MERCADO_PAGO_SUBSCRIPTION_PLAN_ID,
         JSON.stringify(checkout.raw || {}),
       ],
@@ -1564,7 +1554,7 @@ app.post("/v1/billing/subscription/checkout", async (req, res) => {
 
     log("info", "billing_subscription_checkout_created", {
       customerId,
-      preapprovalId: checkout.preapprovalId,
+      payerEmail,
       status: checkout.status,
     });
     return res.status(201).json({
