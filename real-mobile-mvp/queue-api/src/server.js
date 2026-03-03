@@ -295,6 +295,10 @@ const createPixTopupSchema = z.object({
   amount: z.number().min(BILLING_MIN_TOPUP).max(50000),
 });
 
+const createSubscriptionCheckoutSchema = z.object({
+  returnUrl: z.string().url().optional(),
+});
+
 const adsPublicationActionSchema = z.object({
   action: z.enum(["pause", "resume", "stop"]),
 });
@@ -1161,6 +1165,27 @@ async function createPixTopupPayment({ customerId, amount, payerEmail }) {
   };
 }
 
+async function createSubscriptionCheckout({ customerId, payerEmail, returnUrl }) {
+  const body = {
+    preapproval_plan_id: MERCADO_PAGO_SUBSCRIPTION_PLAN_ID,
+    reason: "Assinatura RealApp Pro",
+    external_reference: customerId,
+    payer_email: payerEmail || "cliente@realapp.local",
+    ...(returnUrl ? { back_url: returnUrl } : {}),
+  };
+  const response = await mercadoPagoApi("/preapproval", {
+    method: "POST",
+    body,
+    idempotencyKey: randomUUID(),
+  });
+  return {
+    preapprovalId: String(response?.id || ""),
+    status: String(response?.status || "pending").toLowerCase(),
+    checkoutUrl: String(response?.init_point || ""),
+    raw: response,
+  };
+}
+
 async function fetchPaymentStatus(paymentId) {
   const response = await mercadoPagoApi(`/v1/payments/${encodeURIComponent(paymentId)}`, { method: "GET" });
   return {
@@ -1475,6 +1500,82 @@ app.get("/v1/billing/wallet", async (req, res) => {
   } catch (error) {
     log("error", "billing_wallet_failed", { customerId, error: String(error) });
     return res.status(500).json({ error: "Falha ao carregar carteira." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/v1/billing/subscription/checkout", async (req, res) => {
+  const parsed = createSubscriptionCheckoutSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
+  if (!MERCADO_PAGO_SUBSCRIPTION_PLAN_ID) {
+    return res.status(503).json({ error: "Plano de assinatura não configurado." });
+  }
+
+  const customerId = req.user.id;
+  const payerEmail = req.user.email;
+  const returnUrl = parsed.data.returnUrl || process.env.MERCADO_PAGO_SUBSCRIPTION_RETURN_URL || undefined;
+  const client = await pool.connect();
+  try {
+    const existing = await client.query(`select * from billing_subscriptions where customer_id = $1 limit 1`, [customerId]);
+    const existingStatus = String(existing.rows[0]?.status || "").toLowerCase();
+    if (existingStatus === "active") {
+      const planActive = await getPlanActive(client, customerId);
+      return res.json({
+        planActive,
+        status: "active",
+        preapprovalId: existing.rows[0]?.provider_preapproval_id || null,
+        checkoutUrl: null,
+      });
+    }
+
+    const checkout = await createSubscriptionCheckout({ customerId, payerEmail, returnUrl });
+    if (!checkout.preapprovalId || !checkout.checkoutUrl) {
+      return res.status(502).json({ error: "Falha ao criar checkout de assinatura." });
+    }
+
+    const subscriptionStatus = mapPreapprovalStatus(checkout.status);
+    const planActive = mapPreapprovalToPlanActive(checkout.status);
+    await client.query(
+      `insert into billing_subscriptions (customer_id, status, provider_preapproval_id, plan_id, raw_payload)
+       values ($1, $2, $3, $4, $5::jsonb)
+       on conflict (customer_id)
+       do update set
+         status = excluded.status,
+         provider_preapproval_id = excluded.provider_preapproval_id,
+         plan_id = excluded.plan_id,
+         raw_payload = excluded.raw_payload,
+         updated_at = now()`,
+      [
+        customerId,
+        subscriptionStatus,
+        checkout.preapprovalId,
+        MERCADO_PAGO_SUBSCRIPTION_PLAN_ID,
+        JSON.stringify(checkout.raw || {}),
+      ],
+    );
+    await client.query(
+      `insert into entitlements (customer_id, plan_active)
+       values ($1, $2)
+       on conflict (customer_id)
+       do update set plan_active = excluded.plan_active, updated_at = now()`,
+      [customerId, planActive],
+    );
+
+    log("info", "billing_subscription_checkout_created", {
+      customerId,
+      preapprovalId: checkout.preapprovalId,
+      status: checkout.status,
+    });
+    return res.status(201).json({
+      planActive,
+      status: checkout.status,
+      preapprovalId: checkout.preapprovalId,
+      checkoutUrl: checkout.checkoutUrl,
+    });
+  } catch (error) {
+    log("error", "billing_subscription_checkout_failed", { customerId, error: String(error) });
+    return res.status(500).json({ error: "Falha ao iniciar assinatura." });
   } finally {
     client.release();
   }

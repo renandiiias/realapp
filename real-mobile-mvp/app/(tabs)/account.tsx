@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useState } from "react";
 import { useAuth } from "../../src/auth/AuthProvider";
 import { useQueue } from "../../src/queue/QueueProvider";
 import { realTheme } from "../../src/theme/realTheme";
@@ -19,6 +20,7 @@ type CheckItem = {
 export default function Account() {
   const auth = useAuth();
   const queue = useQueue();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const hasCompany = Boolean(
     auth.companyProfile?.companyName?.trim() &&
@@ -70,6 +72,29 @@ export default function Account() {
       return;
     }
     router.push("/account/investment");
+  };
+
+  const handlePlanCheckout = async () => {
+    setCheckoutLoading(true);
+    try {
+      const result = await queue.createSubscriptionCheckout();
+      if (result.planActive) {
+        Alert.alert("Plano ativo", "Seu plano já está ativo para criação de anúncios.");
+        return;
+      }
+      if (result.checkoutUrl) {
+        const canOpen = await Linking.canOpenURL(result.checkoutUrl);
+        if (canOpen) {
+          await Linking.openURL(result.checkoutUrl);
+          return;
+        }
+      }
+      Alert.alert("Falha ao abrir checkout", "Não foi possível abrir o link de assinatura.");
+    } catch (error) {
+      Alert.alert("Falha ao iniciar assinatura", error instanceof Error ? error.message : "Tente novamente.");
+    } finally {
+      setCheckoutLoading(false);
+    }
   };
 
   return (
@@ -126,8 +151,8 @@ export default function Account() {
 
           <View style={styles.planBottom}>
             <Text style={styles.planMuted}>3 de 5 campanhas ativas</Text>
-            <TouchableOpacity activeOpacity={0.85} onPress={() => queue.setPlanActive(true)}>
-              <Text style={styles.planAction}>Gerenciar plano</Text>
+            <TouchableOpacity activeOpacity={0.85} onPress={() => void handlePlanCheckout()} disabled={checkoutLoading}>
+              <Text style={styles.planAction}>{checkoutLoading ? "Abrindo..." : "Gerenciar plano"}</Text>
             </TouchableOpacity>
           </View>
         </View>

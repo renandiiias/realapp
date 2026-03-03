@@ -46,6 +46,12 @@ type QueueContextValue = {
 
   refresh(): Promise<void>;
   setPlanActive(active: boolean): Promise<void>;
+  createSubscriptionCheckout(input?: { returnUrl?: string }): Promise<{
+    planActive: boolean;
+    status: string;
+    preapprovalId?: string | null;
+    checkoutUrl?: string | null;
+  }>;
   createPixTopup(amount: number): Promise<{
     topupId: string;
     status: "pending" | "approved" | "failed" | "expired";
@@ -333,6 +339,15 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     [client, refresh],
   );
 
+  const createSubscriptionCheckout = useCallback(
+    async (input?: { returnUrl?: string }) => {
+      const result = await client.createSubscriptionCheckout(input);
+      await refresh();
+      return result;
+    },
+    [client, refresh],
+  );
+
   const getTopupStatus = useCallback(
     async (topupId: string) => {
       const status = await client.getTopupStatus(topupId);
@@ -380,6 +395,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     lastSyncAt,
     refresh,
     setPlanActive,
+    createSubscriptionCheckout,
     createPixTopup,
     getTopupStatus,
     createOrder,

@@ -1,6 +1,6 @@
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { ImageBackground, Pressable, ScrollView, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
+import { Alert, ImageBackground, Linking, Pressable, ScrollView, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
 import Svg, { Circle, Defs, Line, LinearGradient as SvgLinearGradient, Path, Rect, Stop } from "react-native-svg";
 import { fetchAdsDashboardSnapshot, type AdsDashboardDailyPoint, type AdsDashboardSnapshot } from "../../src/ads/dashboardApi";
 import { canAccessInternalPreviews } from "../../src/auth/accessControl";
@@ -61,8 +61,32 @@ const performanceCards: PerformanceCard[] = [
 export default function Orders() {
   const auth = useAuth();
   const queue = useQueue();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] = useState<AdsDashboardSnapshot | null>(null);
   const hasInternalPreviewAccess = canAccessInternalPreviews(auth.userEmail);
+
+  const handlePlanCheckout = async () => {
+    setCheckoutLoading(true);
+    try {
+      const result = await queue.createSubscriptionCheckout();
+      if (result.planActive) {
+        Alert.alert("Plano ativo", "Seu plano já está ativo para criação de anúncios.");
+        return;
+      }
+      if (result.checkoutUrl) {
+        const canOpen = await Linking.canOpenURL(result.checkoutUrl);
+        if (canOpen) {
+          await Linking.openURL(result.checkoutUrl);
+          return;
+        }
+      }
+      Alert.alert("Falha ao abrir checkout", "Não foi possível abrir o link de assinatura.");
+    } catch (error) {
+      Alert.alert("Falha ao iniciar assinatura", error instanceof Error ? error.message : "Tente novamente.");
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
 
   const pendingApprovals = queue.listPendingApprovals().length;
   const adsDashboard = useMemo(
@@ -171,7 +195,7 @@ export default function Orders() {
           <Card>
             <Title>Ver resultados</Title>
             <Body>Ative para acompanhar contatos, custo por lead e desempenho dos ativos.</Body>
-            <Button label="Ativar agora (simular)" onPress={() => queue.setPlanActive(true)} />
+            <Button label={checkoutLoading ? "Abrindo checkout..." : "Contratar plano"} onPress={() => void handlePlanCheckout()} />
           </Card>
         </View>
       </Screen>

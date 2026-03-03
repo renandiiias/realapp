@@ -664,6 +664,21 @@ export class MockQueueClient implements QueueClient {
     await saveMockDb(db);
   }
 
+  async createSubscriptionCheckout(): Promise<{
+    planActive: boolean;
+    status: string;
+    preapprovalId?: string | null;
+    checkoutUrl?: string | null;
+  }> {
+    await this.setPlanActive(true);
+    return {
+      planActive: true,
+      status: "authorized",
+      preapprovalId: `mock-preapproval-${uuidv4().slice(0, 8)}`,
+      checkoutUrl: "https://www.mercadopago.com.br",
+    };
+  }
+
   async getWallet(): Promise<{
     planActive: boolean;
     walletBalance: number;

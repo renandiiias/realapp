@@ -38,6 +38,12 @@ export type QueueClient = {
   // Customer state (mock/payment simulation).
   getPlanActive(): Promise<boolean>;
   setPlanActive(active: boolean): Promise<void>;
+  createSubscriptionCheckout(input?: { returnUrl?: string }): Promise<{
+    planActive: boolean;
+    status: string;
+    preapprovalId?: string | null;
+    checkoutUrl?: string | null;
+  }>;
   getWallet(): Promise<{
     planActive: boolean;
     walletBalance: number;

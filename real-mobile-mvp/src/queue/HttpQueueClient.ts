@@ -72,6 +72,18 @@ export class HttpQueueClient implements QueueClient {
     });
   }
 
+  async createSubscriptionCheckout(input?: { returnUrl?: string }): Promise<{
+    planActive: boolean;
+    status: string;
+    preapprovalId?: string | null;
+    checkoutUrl?: string | null;
+  }> {
+    return api(`${this.baseUrl}/v1/billing/subscription/checkout`, {
+      method: "POST",
+      body: JSON.stringify({ returnUrl: input?.returnUrl } satisfies Json),
+    });
+  }
+
   async getWallet(): Promise<{
     planActive: boolean;
     walletBalance: number;
